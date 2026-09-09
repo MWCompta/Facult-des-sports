@@ -670,20 +670,25 @@ const baseMaps = {
 };
 
 baseMaps["OpenStreetMap (couleur)"].addTo(map);
-L.control.layers(baseMaps, null, { position: 'topright', collapsed: true }).addTo(map);
+const layersControl = L.control.layers(baseMaps, null, { position: 'topright', collapsed: true }).addTo(map);
 
 // Tous les fonds de carte sont maintenant de vraies images distinctes (aucun n'est un
 // filtre CSS appliqué sur les mêmes tuiles) : une capture d'écran classique suffit donc
-// pour tous, sans recomposition ni filtre à reproduire manuellement.
+// pour tous, sans recomposition ni filtre à reproduire manuellement. Le sélecteur de fond de
+// carte (icône en haut à droite) est masqué le temps de la capture comme le contrôle de
+// zoom : ni l'un ni l'autre n'a sa place sur un export imprimé.
 async function captureMapCanvas() {
   const zoomEl = map.zoomControl && map.zoomControl.getContainer();
+  const layersEl = layersControl && layersControl.getContainer();
   if (zoomEl) zoomEl.classList.add('capture-hide');
+  if (layersEl) layersEl.classList.add('capture-hide');
   try {
     return await html2canvas(document.getElementById('map'), {
       useCORS: true, backgroundColor: '#ffffff', scale: 2
     });
   } finally {
     if (zoomEl) zoomEl.classList.remove('capture-hide');
+    if (layersEl) layersEl.classList.remove('capture-hide');
   }
 }
 
@@ -721,28 +726,6 @@ async function waitForTilesToLoad(timeoutMs = 5000) {
     while (unsettledMapTileImgs().length > 0 && Date.now() - retryStart < 2000) {
       await sleep(100);
     }
-  }
-}
-
-// Un cran de zoom en plus par rapport à la vue à l'écran, appliqué UNIQUEMENT à la capture
-// de la carte principale de l'export (page 1) : le cadrage automatique (fitBounds sur les
-// points du groupe) laisse souvent une marge large autour du tracé — se rapprocher d'un cran
-// donne une carte plus lisible à l'impression, comme un clic sur "+" juste avant d'exporter.
-// La vue à l'écran est restaurée juste après la capture (uniquement affectée le temps de
-// celle-ci, jamais laissée modifiée pour l'utilisateur).
-async function captureMainMapForExport() {
-  const originalCenter = map.getCenter();
-  const originalZoom = map.getZoom();
-  const targetZoom = Math.min(originalZoom + 1, map.getMaxZoom());
-  try {
-    if (targetZoom !== originalZoom) {
-      map.setZoom(targetZoom, { animate: false });
-      await waitForTilesToLoad();
-      await new Promise(r => requestAnimationFrame(r));
-    }
-    return await captureMapCanvas();
-  } finally {
-    if (targetZoom !== originalZoom) map.setView(originalCenter, originalZoom, { animate: false });
   }
 }
 
@@ -2016,6 +1999,7 @@ document.getElementById('reset-group-btn').addEventListener('click', () => {
 function captureControlsToHide() {
   return [
     map.zoomControl && map.zoomControl.getContainer(),
+    layersControl && layersControl.getContainer(),
     ...document.querySelectorAll('.weather-toggle'),
     document.getElementById('btn-general'),
     document.getElementById('btn-nancy'),
@@ -2467,16 +2451,19 @@ function drawLocatorPanel(doc, locatorInfo, pageW, pageH, margin) {
 
 // ------------------------------------------------------------------
 // 15. EXPORT PDF — GÉNÉRATION DU DOCUMENT
-// Page 1 : carte pleine page + vignette de repère sur le bassin (sauf en vue générale).
-// Page 2 : bilan visuel du groupe + tableau détaillé par personne. Utilisée pour l'export
-// d'un seul groupe (ou de la vue générale) via le bouton "Exporter (PDF)" — voir aussi
-// l'export groupé (section 17), qui appelle des fonctions similaires pour construire un
-// document unique avec tous les groupes.
+// Page 1 (portrait) : carte pleine page + vignette de repère sur le bassin (sauf en vue
+// générale) — empilées verticalement, le format portrait leur donne plus de hauteur cumulée
+// qu'un format paysage (essayé à la demande de Valentin : gain réel puisque les 2 cartes sont
+// déjà empilées, pas côte à côte). Page 2 (paysage, plus adaptée à un tableau large) : bilan
+// visuel du groupe + tableau détaillé par personne. Utilisée pour l'export d'un seul groupe
+// (ou de la vue générale) via le bouton "Exporter (PDF)" — voir aussi l'export groupé
+// (section 17), qui appelle des fonctions similaires pour construire un document unique avec
+// tous les groupes.
 // ------------------------------------------------------------------
 async function exportAsPdf(label) {
   const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if (typeof jsPDFCtor !== 'function') throw new Error('jsPDF indisponible');
-  const doc = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const doc = new jsPDFCtor({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   if (typeof doc.autoTable !== 'function') throw new Error('autoTable indisponible');
 
   await new Promise(r => requestAnimationFrame(r)); // laisse Leaflet finir de peindre le canvas
@@ -2485,7 +2472,9 @@ async function exportAsPdf(label) {
   // par-dessus (elle rétrécit d'autant, demandé par Valentin en même temps que
   // l'agrandissement de la vignette).
   const locatorInfo = selectedGroup !== null ? await captureLocatorMap(selectedGroup) : null;
-  const mapCanvas = await captureMainMapForExport();
+  // Capture directe de la vue à l'écran, sans zoom ajouté : l'export doit montrer exactement
+  // ce que l'utilisateur regarde, jamais une vue recadrée à son insu.
+  const mapCanvas = await captureMapCanvas();
   const mapImg = mapCanvas.toDataURL('image/png');
 
   const pageW = doc.internal.pageSize.getWidth();
@@ -2503,17 +2492,19 @@ async function exportAsPdf(label) {
   doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
   if (locatorInfo) drawLocatorPanel(doc, locatorInfo, pageW, pageH, margin);
 
-  // PAGE 2 — bilan visuel du groupe + tableau détaillé
-  doc.addPage();
+  // PAGE 2 (paysage) — bilan visuel du groupe + tableau détaillé
+  doc.addPage('a4', 'landscape');
+  const pageW2 = doc.internal.pageSize.getWidth();
+  const pageH2 = doc.internal.pageSize.getHeight();
   const concerned = lastTraceData ? filterConcerned(lastTraceData.perPerson) : [];
   const groupTitle = `Covoiturage L1 STAPS — ${exportTitle()}`;
   const dateStr = new Date().toLocaleString('fr-FR');
 
   if (lastTraceData && concerned.length) {
     const bilan = computeGroupBilan(concerned, lastTraceData.concernedTotals);
-    buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan);
+    buildGroupDetailPage(doc, groupTitle, dateStr, pageW2, pageH2, margin, contentTop, concerned, bilan);
   } else {
-    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW2, margin);
     doc.setFontSize(9);
     doc.text("Aucun trajet tracé pour ce groupe.", margin, contentTop + 6);
     doc.text('Cliquez sur "Tracer l\'itinéraire" avant d\'exporter pour obtenir le détail par personne.', margin, contentTop + 11);
@@ -2687,18 +2678,20 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   await new Promise(r => requestAnimationFrame(r));
 
   const locatorInfo = await captureLocatorMap(g);
-  const mapCanvas = await captureMainMapForExport();
+  // Capture directe de la vue à l'écran, sans zoom ajouté : l'export doit montrer exactement
+  // ce que l'utilisateur regarde, jamais une vue recadrée à son insu.
+  const mapCanvas = await captureMapCanvas();
   const mapImg = mapCanvas.toDataURL('image/png');
 
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
   const margin = 10;
   const contentTop = 22;
   const groupTitle = `Covoiturage L1 STAPS — Groupe ${g} — arrivée : ${destinationLabelForGroup(g)}`;
   const dateStr = new Date().toLocaleString('fr-FR');
 
-  // Page carte pleine page (réduite pour réserver la place de la vignette de repère)
-  doc.addPage();
+  // Page carte pleine page (portrait, réduite pour réserver la place de la vignette de repère)
+  doc.addPage('a4', 'portrait');
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
   drawPageHeader(doc, groupTitle, dateStr, pageW, margin);
   const availW = pageW - margin * 2;
   const availH = pageH - contentTop - margin - locatorFootprintHeight(locatorInfo);
@@ -2707,14 +2700,16 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
   drawLocatorPanel(doc, locatorInfo, pageW, pageH, margin);
 
-  // Page données : bilan visuel + tableau détaillé
-  doc.addPage();
+  // Page données (paysage) : bilan visuel + tableau détaillé
+  doc.addPage('a4', 'landscape');
+  const pageW2 = doc.internal.pageSize.getWidth();
+  const pageH2 = doc.internal.pageSize.getHeight();
 
   if (concerned.length) {
     const bilan = computeGroupBilan(concerned, saved.concernedTotals);
-    buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan);
+    buildGroupDetailPage(doc, groupTitle, dateStr, pageW2, pageH2, margin, contentTop, concerned, bilan);
   } else {
-    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW2, margin);
     doc.setFontSize(9);
     doc.text('Aucune personne concernée par le covoiturage dans ce groupe.', margin, contentTop + 6);
   }
@@ -3749,6 +3744,7 @@ const PROJECT_HISTORY = [
   { theme: "Export PDF / PNG", text: "Deux nouveaux retours de Valentin après export réel. (1) \"Filtre gris\" systématique sur les cartes exportées : cause identifiée — .leaflet-container a un fond gris par défaut (#ddd), visible par transparence tant qu'une tuile n'est pas complètement chargée ; comme la capture principale (zoom d'un cran, entrée précédente) ET la vignette de repère changent toutes deux la vue juste avant de capturer, une capture prise trop tôt (avant la fin du chargement des nouvelles tuiles) laissait ce gris transparaître un peu partout, lu comme un filtre. L'attente précédente (évènement 'load' de la couche Leaflet active) a été remplacée par une vérification directe du DOM (allMapTilesLoaded : toutes les <img> de .leaflet-tile-pane doivent être complete avec une largeur réelle) — exactement l'état que html2canvas va lire, donc plus fiable que l'évènement de la couche, qui peut se déclencher avant la fin de la peinture. activeTileLayers(), devenue inutile, est supprimée. (2) Zoom de la vignette de repère jugé insuffisant : les bornes géographiques par bassin (BASIN_LOCATOR_BOUNDS) ont été resserrées aux seules communes de l'agglomération (Métropole du Grand Nancy / agglomération spinalienne) plutôt qu'une zone plus large englobant les environs ruraux — non vérifié à l'oeil (pas d'accès navigateur dans cette session), à recontrôler sur un export réel." },
   { theme: "Export PDF / PNG", text: "Zoom de la vignette de repère toujours jugé insuffisant par Valentin malgré le resserrement précédent des bornes géographiques (BASIN_LOCATOR_BOUNDS) : cause probable identifiée — fitBounds() cale son zoom sur la dimension la plus contraignante par rapport à la FORME du conteneur (le div carte est nettement plus large que haut) ; une zone resserrée mais plus haute que large que le conteneur se retrouve donc dézoomée bien au-delà de ce qu'elle devrait montrer, pour que sa hauteur tienne dans un conteneur large — le resserrement des bornes n'y changeait rien tant que leur forme ne correspondait pas à celle du conteneur. Remplacé par un centre + niveau de zoom Leaflet fixes par bassin (BASIN_LOCATOR_VIEW, zoom 13 pour Nancy centré sur DESTINATION_NANCY, zoom 14 pour Épinal centré sur DESTINATION_EPINAL, plus petit), qui ne dépend pas de la forme du conteneur. Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — à recontrôler sur un export réel, les valeurs de zoom pourront être ajustées si encore insatisfaisantes." },
   { theme: "Export PDF / PNG", text: "Trois demandes de Valentin en une fois. (1) Vignette de repère agrandie ×1,5 (62mm → 93mm, LOCATOR_WIDTH_MM) ; la carte principale de la page 1 réserve désormais cette place au lieu de la superposer par-dessus : captureLocatorMap est appelée AVANT la carte principale pour connaître sa hauteur réelle (locatorFootprintHeight, dépend du ratio largeur/hauteur de la capture), qui réduit d'autant la hauteur disponible pour la grande carte (dans le cas courant où la carte tenait déjà en largeur avec de la marge en dessous, la réduction ne change rien à l'image ; elle ne rétrécit vraiment que si la carte avait besoin de toute la hauteur disponible). drawLocatorInset, qui capturait et dessinait en une seule fonction, est scindée en captureLocatorMap (déjà existante, inchangée) et drawLocatorPanel (dessin pur, sans capture), pour permettre cet ordonnancement. (2) Page 2 : bloc \"comparaison seul·e/covoituré\" (barres CO2 et coût) jugé redondant par Valentin avec la carte \"Impact évité\" juste au-dessus (même pourcentage, déjà expliqué là où c'est calculé) — remplacé, à sa demande, par un mini-récapitulatif par équipage (buildCrewSummaries + drawCrewRecap) : une ligne par conducteur·rice survivant·e avec sa couleur (même formule que buildCrewInfo, cohérent avec la colonne repère du tableau plus bas), son nombre de passager·ères et les chiffres réels de son trajet covoituré (repris de covoitLabel, déjà calculés). La répartition des modes reste à côté, dans une largeur un peu réduite. Sur le bilan global (page de tête de l'export groupé, qui agrège plusieurs groupes), aucun équipage n'a de sens : drawCrewAndModeBox accepte `concerned` optionnel et affiche alors la seule répartition des modes en pleine largeur. (3) Persistance d'un peu de gris sur certaines vues/fonds de carte malgré le correctif précédent : cause probable — une tuile en ÉCHEC de chargement (serveur de tuiles temporairement indisponible ou limité, plus fréquent sur certains fonds Esri sous charge) ne se recharge jamais d'elle-même ; l'ancienne attente considérait ces tuiles comme \"non prêtes\" indéfiniment et épuisait tout le délai d'attente pour rien, sans jamais les récupérer. waitForTilesToLoad distingue maintenant une tuile encore en chargement (unsettledMapTileImgs) d'une tuile en échec définitif (brokenMapTileImgs : complete mais naturalWidth à 0) et relance une fois le chargement des secondes (technique classique : réassigner le même src) avant de céder. Validé par des tests isolés (regroupement en équipages avec comptage des passager·ères et couleurs, cas sans aucun équipage, rendu sans plantage avec/sans équipages y compris en cas de liste trop longue pour la hauteur réservée, cohérence de locatorFootprintHeight avec le ratio de la capture) et par les 38/38 tests existants de tests_covoiturage.html. Le zoom de la vignette et l'absence totale de gris restent non vérifiés à l'oeil (pas d'accès navigateur dans cette session)." },
+  { theme: "Export PDF / PNG", text: "Trois retours de Valentin après un nouvel export réel. (1) Signalé comme un problème de précision important : la grande carte de la page 1 ne correspondait plus exactement à ce qui est affiché à l'écran — cause : le cran de zoom ajouté automatiquement avant la capture (captureMainMapForExport, entrée du 9 sept), en gardant le même centre, pouvait recadrer hors champ une partie du tracé visible à l'écran avant le zoom. Fonction retirée : la carte principale (exportAsPdf ET appendGroupPagesToDoc) capture à nouveau directement la vue courante, sans aucune modification — l'export doit toujours montrer exactement ce que Valentin regarde, jamais une vue recadrée à son insu, quitte à perdre le rapprochement visuel obtenu par le cran de zoom. (2) Icône de sélection du fond de carte (en haut à droite, à côté du zoom) masquée pendant la capture, comme le contrôle de zoom l'était déjà — L.control.layers() est maintenant gardé dans une variable (layersControl) pour pouvoir le cibler ; appliqué à captureMapCanvas() (donc aux deux cartes de l'export PDF, grande carte et vignette, qui partagent cette fonction) et ajouté à la liste de captureControlsToHide() pour le secours PNG. (3) Testé à la demande de Valentin (\"on essaie ?\") : la page 1 (carte + vignette, empilées verticalement) passe en format portrait plutôt que paysage — gain réel de place pour les deux cartes empilées verticalement (plus de hauteur disponible au format portrait, quand elles étaient auparavant contraintes par la hauteur, pas la largeur, en paysage). La page 2 (tableau large + cartes chiffrées) reste en paysage, plus adaptée à son contenu : jsPDF permet de mélanger les orientations dans un même document via doc.addPage(format, orientation) sur chaque nouvelle page. Dans l'export groupé (exportAllGroups), seule la page de bilan global (déjà un tableau, reste paysage comme avant) et les pages de données par groupe (paysage) sont concernées différemment des pages de carte par groupe (portrait) ; pageW/pageH sont maintenant recalculés après chaque doc.addPage() plutôt que réutilisés d'une page à l'autre, les deux orientations n'ayant pas les mêmes dimensions. Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — à recontrôler sur un export réel, en particulier si le format portrait convient visuellement ou s'il faut revenir en arrière." },
 ];
 
 // ------------------------------------------------------------------
