@@ -687,17 +687,28 @@ async function captureMapCanvas() {
   }
 }
 
-// Petite carte de repère (page 1 de l'export PDF) : zoom fixe sur la métropole du bassin
-// concerné (nancéien ou spinalien), toujours le même cadrage, pour situer le groupe dans
-// son ensemble. N'affiche QUE le fond de carte (marqueurs et tracés masqués le temps de la
-// capture) : leur contenu changerait d'un groupe à l'autre, alors que cette vignette doit
-// rester identique pour tout le bassin — d'où le cache par bassin ci-dessous, qui évite de
-// la reconstruire à chaque groupe lors de l'export groupé.
-const BASIN_LOCATOR_BOUNDS = {
-  nancy: L.latLngBounds([48.595, 6.03], [48.735, 6.29]),
-  epinal: L.latLngBounds([48.135, 6.33], [48.235, 6.58])
-};
-let locatorMapCache = { nancy: null, epinal: null };
+// Un cran de zoom en plus par rapport à la vue à l'écran, appliqué UNIQUEMENT à la capture
+// de la carte principale de l'export (page 1) : le cadrage automatique (fitBounds sur les
+// points du groupe) laisse souvent une marge large autour du tracé — se rapprocher d'un cran
+// donne une carte plus lisible à l'impression, comme un clic sur "+" juste avant d'exporter.
+// La vue à l'écran est restaurée juste après la capture (uniquement affectée le temps de
+// celle-ci, jamais laissée modifiée pour l'utilisateur).
+async function captureMainMapForExport() {
+  const originalCenter = map.getCenter();
+  const originalZoom = map.getZoom();
+  const targetZoom = Math.min(originalZoom + 1, map.getMaxZoom());
+  try {
+    if (targetZoom !== originalZoom) {
+      const tilesLoaded = waitForTilesToLoad();
+      map.setZoom(targetZoom, { animate: false });
+      await tilesLoaded;
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    return await captureMapCanvas();
+  } finally {
+    if (targetZoom !== originalZoom) map.setView(originalCenter, originalZoom, { animate: false });
+  }
+}
 
 function activeTileLayers() {
   const layers = [];
@@ -726,34 +737,32 @@ function waitForTilesToLoad(timeoutMs = 3000) {
   });
 }
 
-async function getLocatorMapImage(basin) {
-  if (locatorMapCache[basin]) return locatorMapCache[basin];
+// Petite carte de repère (page 1 de l'export PDF) : zoom fixe sur la métropole du bassin
+// concerné (nancéien ou spinalien — toujours le même cadrage géographique, voir
+// BASIN_LOCATOR_BOUNDS), avec les MÊMES marqueurs et tracés que la grande carte — c'est
+// justement pour resituer le trajet du groupe dans une zone dense en population et en routes
+// que cette vignette existe ; un simple fond de carte vide n'aurait aucun sens. Pas de mise
+// en cache : son contenu (marqueurs, tracés) change à chaque groupe, seul le cadrage reste
+// fixe d'un groupe à l'autre du même bassin.
+const BASIN_LOCATOR_BOUNDS = {
+  nancy: L.latLngBounds([48.595, 6.03], [48.735, 6.29]),
+  epinal: L.latLngBounds([48.135, 6.33], [48.235, 6.58])
+};
+async function captureLocatorMap(group) {
+  const basin = basinOf(group);
   const originalCenter = map.getCenter();
   const originalZoom = map.getZoom();
-  const zoomEl = map.zoomControl && map.zoomControl.getContainer();
-  if (zoomEl) zoomEl.classList.add('capture-hide');
-  map.removeLayer(markersLayer);
-  map.removeLayer(routeLayerGroup);
   try {
     const tilesLoaded = waitForTilesToLoad();
     map.fitBounds(BASIN_LOCATOR_BOUNDS[basin], { animate: false });
     await tilesLoaded;
     await new Promise(r => requestAnimationFrame(r));
-    const canvas = await html2canvas(document.getElementById('map'), {
-      useCORS: true, backgroundColor: '#ffffff', scale: 1
-    });
-    locatorMapCache[basin] = canvas.toDataURL('image/png');
-    return locatorMapCache[basin];
+    const canvas = await captureMapCanvas();
+    return { basin, dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height };
   } finally {
-    map.addLayer(markersLayer);
-    map.addLayer(routeLayerGroup);
-    if (zoomEl) zoomEl.classList.remove('capture-hide');
     map.setView(originalCenter, originalZoom, { animate: false });
   }
 }
-// Le fond de carte affiché fait partie de la vignette : si on en change en cours de
-// session, le cache doit être recalculé plutôt que de garder l'ancien fond.
-map.on('baselayerchange', () => { locatorMapCache = { nancy: null, epinal: null }; });
 
 // ------------------------------------------------------------------
 // 6. ÉTAT GLOBAL PARTAGÉ
@@ -2093,26 +2102,30 @@ function chooseLayoutLevel(nRows, availableHeight) {
 // tableau détaillé, qui vient après), retournée par drawGroupBilanVisual() pour que l'appelant
 // sache où démarrer la suite.
 // ------------------------------------------------------------------
+// CO2, coût et distance sont trois transformations linéaires du même kilométrage (voir
+// TRANSPORT_PROFILES : les trois modes "voiture" — individuelle, covoiturage conducteur,
+// covoiturage passager — partagent le même g CO2/km et €/km, et ce sont les seuls modes
+// possibles pour les personnes "concernées" par le bilan). Le pourcentage évité est donc
+// TOUJOURS identique pour les trois, quel que soit le groupe — les afficher comme 3 cartes
+// séparées n'aurait fait que répéter trois fois le même chiffre (constaté par Valentin) :
+// une seule carte "Impact évité" les regroupe, avec un seul pourcentage et le détail
+// (valeurs absolues) des trois métriques en dessous.
 function drawKpiCards(doc, x, y, width, bilan) {
   const cards = [
     {
       label: 'Véhicules évités', value: String(bilan.carsAvoided), suffix: '',
-      subtitle: `${bilan.nCarPeople} personne(s) en voiture → ${bilan.nDrivers} véhicule(s) réellement utilisé(s)`
+      subtitleLines: [`${bilan.nCarPeople} personne(s) en voiture, ramenées à ${bilan.nDrivers} véhicule(s) réellement utilisé(s)`]
     },
     {
-      label: 'CO2 évité', value: bilan.co2Pct.toFixed(0), suffix: ' %',
-      subtitle: `${fmtKg(bilan.totals.covoitCO2)} covoituré, contre ${fmtKg(bilan.totals.seulCO2)} si chacun roulait seul`
-    },
-    {
-      label: 'Coût évité', value: bilan.costPct.toFixed(0), suffix: ' %',
-      subtitle: `${fmtEuro(bilan.totals.covoitCost)} covoituré, contre ${fmtEuro(bilan.totals.seulCost)} si chacun roulait seul`
-    },
-    {
-      label: 'Distance évitée', value: bilan.kmPct.toFixed(0), suffix: ' %',
-      subtitle: `${fmtKm(bilan.totals.covoitKm)} covoiturés, contre ${fmtKm(bilan.totals.seulKm)} si chacun roulait seul`
+      label: 'Impact évité', value: bilan.co2Pct.toFixed(0), suffix: ' %',
+      subtitleLines: [
+        `CO2 : ${fmtKg(bilan.co2Saved)} évités (${fmtKg(bilan.totals.covoitCO2)} contre ${fmtKg(bilan.totals.seulCO2)})`,
+        `Coût : ${fmtEuro(bilan.costSaved)} évités (${fmtEuro(bilan.totals.covoitCost)} contre ${fmtEuro(bilan.totals.seulCost)})`,
+        `Distance : ${fmtKm(bilan.kmSaved)} évités (${fmtKm(bilan.totals.covoitKm)} contre ${fmtKm(bilan.totals.seulKm)})`
+      ]
     }
   ];
-  const gap = 4, cardH = 20;
+  const gap = 4, cardH = 26;
   const cardW = (width - gap * (cards.length - 1)) / cards.length;
   cards.forEach((card, i) => {
     const cx = x + i * (cardW + gap);
@@ -2139,8 +2152,9 @@ function drawKpiCards(doc, x, y, width, bilan) {
     doc.setFont(undefined, 'normal');
     doc.setFontSize(5.8);
     doc.setTextColor(91, 100, 114);
-    const lines = doc.splitTextToSize(card.subtitle, cardW - 6);
-    doc.text(lines.slice(0, 2), cx + 3, y + 17.4);
+    let lines = [];
+    card.subtitleLines.forEach(raw => { lines = lines.concat(doc.splitTextToSize(raw, cardW - 6)); });
+    doc.text(lines.slice(0, 4), cx + 3, y + 17.4);
   });
   doc.setTextColor(0, 0, 0);
   return y + cardH;
@@ -2266,22 +2280,27 @@ function drawGroupBilanVisual(doc, x, y, width, bilan, title = 'Bilan de ce grou
 // couleur de son tracé sur la carte (DRIVER_ROUTE_PALETTE, dans l'ordre de survivingDrivers —
 // le même ordre que celui utilisé pour perPerson), ses passager·ères héritent de la même
 // couleur juste en dessous. Non intégré·es et indépendant·es n'appartiennent à aucun
-// équipage : gris neutre.
-function assignCrewColors(concerned) {
-  const colors = [];
+// équipage (gris neutre) et partagent tous·tes la même clé de groupe 'other' — regroupé·es
+// ensemble en fin de tableau, sans être séparé·es les un·es des autres. `groupKeys` sert à
+// repérer un changement d'équipage (buildGroupDetailPage y insère un espace visuel).
+function buildCrewInfo(concerned) {
+  const colors = [], groupKeys = [];
   let crewColor = [199, 205, 214], driverIdx = -1;
   concerned.forEach(p => {
     if (p.role === 'Conducteur·rice') {
       driverIdx++;
       crewColor = hexToRgb(DRIVER_ROUTE_PALETTE[driverIdx % DRIVER_ROUTE_PALETTE.length]);
       colors.push(crewColor);
+      groupKeys.push(`crew-${driverIdx}`);
     } else if (p.role.startsWith('Passager')) {
       colors.push(crewColor);
+      groupKeys.push(`crew-${driverIdx}`);
     } else {
       colors.push([199, 205, 214]);
+      groupKeys.push('other');
     }
   });
-  return colors;
+  return { colors, groupKeys };
 }
 
 // Au-delà de ce nombre de personnes concernées, on renonce à tout faire tenir sur une seule
@@ -2300,16 +2319,36 @@ function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, co
     acc.seconds += p.seulSeconds; acc.km += p.seulKm; acc.co2 += p.seulCO2; acc.cost += p.seulCost;
     return acc;
   }, { seconds: 0, km: 0, co2: 0, cost: 0 });
+
+  // Construit les lignes du tableau en insérant une ligne d'espacement (fine, sans bordure,
+  // sans contenu) entre deux équipages différents, pour les séparer visuellement à l'oeil —
+  // demandé par Valentin sur la maquette. Les non intégré·es/indépendant·es (clé 'other')
+  // restent groupé·es ensemble, sans espace entre eux/elles.
+  const { colors: crewColors, groupKeys } = buildCrewInfo(concerned);
+  const rows = [];
+  concerned.forEach((p, i) => {
+    if (i > 0 && groupKeys[i] !== groupKeys[i - 1]) rows.push({ type: 'spacer' });
+    rows.push({ type: 'person', person: p, color: crewColors[i] });
+  });
+
   const head = [['', 'Nom', 'Rôle', 'Mode', 'Temps', 'Dist.', 'CO2', 'Coût', 'Covoiturage']];
-  const body = concerned.map(p => ['', p.nom, p.role, p.mode, fmtMin(p.seulSeconds), fmtKm(p.seulKm), fmtKg(p.seulCO2), fmtEuro(p.seulCost), p.covoitLabel]);
+  const body = rows.map(r => r.type === 'spacer'
+    ? ['', '', '', '', '', '', '', '', '']
+    : ['', r.person.nom, r.person.role, r.person.mode, fmtMin(r.person.seulSeconds), fmtKm(r.person.seulKm), fmtKg(r.person.seulCO2), fmtEuro(r.person.seulCost), r.person.covoitLabel]);
   const foot = [['', 'TOTAL', '', '', fmtMin(t.seconds), fmtKm(t.km), fmtKg(t.co2), fmtEuro(t.cost), '']];
-  const crewColors = assignCrewColors(concerned);
   const columnStyles = { 0: { cellWidth: 2.4 } };
   const didParseCell = (data) => {
     if (data.section === 'body') {
-      const c = MODE_COLORS[concerned[data.row.index].mode];
-      if (c) data.cell.styles.fillColor = c;
-      if (data.column.index === 0) data.cell.styles.fillColor = crewColors[data.row.index];
+      const r = rows[data.row.index];
+      if (r.type === 'spacer') {
+        data.cell.styles.fillColor = [255, 255, 255];
+        data.cell.styles.lineWidth = 0;
+        data.cell.styles.minCellHeight = 1.6;
+      } else {
+        const c = MODE_COLORS[r.person.mode];
+        if (c) data.cell.styles.fillColor = c;
+        if (data.column.index === 0) data.cell.styles.fillColor = r.color;
+      }
     }
   };
 
@@ -2318,7 +2357,7 @@ function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, co
   const tableTop = bilanBottom + 6;
 
   if (concerned.length <= BILAN_INLINE_THRESHOLD) {
-    const level = chooseLayoutLevel(concerned.length, pageH - tableTop - margin);
+    const level = chooseLayoutLevel(rows.length, pageH - tableTop - margin);
     doc.autoTable({
       startY: tableTop,
       margin: { left: margin, right: margin },
@@ -2344,23 +2383,21 @@ function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, co
 }
 
 // Vignette de repère en bas à droite de la carte pleine page (page 1) : zoom fixe sur le
-// bassin du groupe (voir getLocatorMapImage). Rien à dessiner en vue générale (pas un
-// bassin unique) — l'appelant ne doit pas appeler cette fonction dans ce cas.
+// bassin du groupe, marqueurs et tracés inclus (voir captureLocatorMap). Rien à dessiner en
+// vue générale (pas un bassin unique) — l'appelant ne doit pas appeler cette fonction dans
+// ce cas.
 async function drawLocatorInset(doc, group, pageW, pageH, margin) {
-  const basin = basinOf(group);
-  const locatorImg = await getLocatorMapImage(basin);
-  const img = new Image();
-  await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = locatorImg; });
+  const { basin, dataUrl, width, height } = await captureLocatorMap(group);
 
   const locW = 62, labelH = 6;
-  const locH = locW * (img.height / img.width);
+  const locH = locW * (height / width);
   const x = pageW - margin - locW;
   const y = pageH - margin - locH - labelH;
 
   doc.setDrawColor(31, 41, 59);
   doc.setLineWidth(0.6);
   doc.rect(x - 0.5, y - 0.5, locW + 1, locH + labelH + 1);
-  doc.addImage(locatorImg, 'PNG', x, y, locW, locH);
+  doc.addImage(dataUrl, 'PNG', x, y, locW, locH);
   doc.setFillColor(31, 41, 59);
   doc.rect(x, y + locH, locW, labelH, 'F');
   doc.setFontSize(6.5);
@@ -2389,7 +2426,7 @@ async function exportAsPdf(label) {
   if (typeof doc.autoTable !== 'function') throw new Error('autoTable indisponible');
 
   await new Promise(r => requestAnimationFrame(r)); // laisse Leaflet finir de peindre le canvas
-  const mapCanvas = await captureMapCanvas();
+  const mapCanvas = await captureMainMapForExport();
   const mapImg = mapCanvas.toDataURL('image/png');
 
   const pageW = doc.internal.pageSize.getWidth();
@@ -2589,7 +2626,7 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   });
   await new Promise(r => requestAnimationFrame(r));
 
-  const mapCanvas = await captureMapCanvas();
+  const mapCanvas = await captureMainMapForExport();
   const mapImg = mapCanvas.toDataURL('image/png');
 
   const pageW = doc.internal.pageSize.getWidth();
@@ -3647,6 +3684,7 @@ const PROJECT_HISTORY = [
   { theme: "Interface et accessibilité", text: "Confirmation de Valentin sur le correctif memberState de l'entrée précédente : le bug touchait en réalité TOUT premier import, pas seulement un réimport. Les 54 adresses de démonstration (aucune n'a de champ mode de déplacement) initialisent déjà memberState pour les id 1 à 54 dès le chargement de la page — donc le tout premier import réel d'une session était déjà, du point de vue du code, un \"deuxième jeu de données\" : quiconque occupait une des 54 premières lignes du fichier importé héritait à tort du driver=false des données de démo, quel que soit son vrai mode. Reproduit puis vérifié corrigé par un scénario isolé (personne #3 en \"Voiture individuelle\" dans les 54 premières lignes, correctement précochée après le correctif). Nouveau problème signalé dans la foulée : pendant un import, la colonne de gauche verrouillée (busy-lock, pointer-events: none) ne peut plus défiler — si la vue était descendue, impossible de remonter voir le compteur de progression (#subtitle, en haut de la colonne) avant la fin de l'import. Corrigé en dupliquant ce message à un second endroit toujours visible, juste sous le bouton \"Parcourir\" (nouvel élément #import-status) : une fonction setImportStatus() écrit désormais aux deux endroits à chaque mise à jour, remplaçant les écritures directes sur #subtitle dans handleCsvImport et handleRetryGeocode. Solution choisie parmi les deux proposées par Valentin (dupliquer l'affichage, plutôt que rendre la colonne défilable pendant le verrou) car nettement plus simple à implémenter sans risque de régression sur le verrou lui-même." },
   { theme: "Algorithme de covoiturage", text: "Vérification demandée par Valentin de \"Mode mauvais temps\" et \"Prendre tout le monde en compte\" : les deux remplissent bien leur rôle (vérifié par des scénarios isolés — bascule vers le plan B uniquement pour les personnes à pied ayant un vrai plan B, sans toucher aux autres modes ; \"tout le monde\" rend bien chacun·e candidat·e au ramassage et vide la catégorie indépendant·e). Un point mineur relevé au passage : le bouton 🚗+ (\"forcer dans le covoiturage\") restait affiché même quand \"tout le monde\" le rendait déjà inutile. Proposition initiale de Valentin pour \"tout le monde\" : cocher littéralement la case de tout le monde dans tous les groupes, avec retour à l'état initial si redécochée. Déconseillé tel quel et remplacé par l'équivalent sûr déjà utilisé pour les passager·ères (entrée du 9 sept) : cocher réellement la case (st.driver = true) pour un mode sans véhicule (bus, vélo, moto, à pied) créerait une conductrice fictive sans voiture, faussant l'algorithme (une personne réellement véhiculée y perdrait une place dans une voiture qui n'existe pas). Solution retenue, validée par 8 scénarios isolés : la case cochée-désactivée déjà utilisée pour les passager·ères s'étend à tout mode sans véhicule dès que \"tout le monde\" est actif — dans le groupe affiché, quel qu'il soit, sans calcul préalable sur les 20 groupes. Les personnes ayant réellement une voiture gardent toujours leur case normale et cliquable (jamais forcées conductrices par ce mode). Le bouton 🚗+ est masqué quand \"tout le monde\" est actif (devenu redondant). Comme rien n'est modifié dans st.driver pour les personnes sans véhicule, décocher \"tout le monde\" restaure automatiquement l'affichage d'origine sans code de restauration nécessaire." },
   { theme: "Export PDF / PNG", text: "Refonte visuelle demandée par Valentin (\"beaucoup plus de design\", force de proposition demandée) — validée d'abord sur une maquette (canvas de design séparé, deux pages) avant intégration réelle. Page 1 : la grande carte reste inchangée, avec ajout d'une vignette de repère en bas à droite (getLocatorMapImage) — zoom fixe (toujours le même cadrage, via des bornes géographiques par bassin, BASIN_LOCATOR_BOUNDS) sur la métropole nancéienne ou spinalienne selon le groupe, fond de carte seul (marqueurs et tracés masqués le temps de la capture, puisqu'ils changent d'un groupe à l'autre alors que la vignette doit rester identique pour tout le bassin) ; mise en cache par bassin (locatorMapCache) pour ne la générer qu'une fois lors de l'export groupé, invalidée si le fond de carte change en cours de session. Absente en vue générale (pas un bassin unique). Page 2 : l'ancien bilan textuel (drawGroupBilan, une liste de phrases + un petit tableau des modes) est remplacé par un bilan visuel (drawGroupBilanVisual) — quatre cartes chiffrées (véhicules évités, CO2/coût/distance évités en %), puis un bloc de comparaison seul·e vs covoituré (deux barres CO2 et coût, plus une barre empilée de répartition des modes avec légende), désormais affiché EN HAUT de page (avant le tableau, alors qu'il était affiché après) ; sa taille est fixe, ne dépendant plus du nombre de modes (LAYOUT_LEVELS perd modeFs/modeCp et estimateBilanHeight disparaît, devenus inutiles — seul le tableau détaillé compacte encore sa police selon le nombre de lignes). Réutilisé tel quel pour le bilan global de l'export groupé (drawGlobalSummaryPage), via toBilanShape() qui ramène computeGlobalSummary() à la même forme que computeGroupBilan(). Demande complémentaire de Valentin sur la maquette : séparer visuellement les équipages (conducteur·rice + ses passager·ères) dans le tableau détaillé — ajouté via une colonne repère étroite en tête de tableau (assignCrewColors), reprenant pour chaque équipage la couleur de son tracé sur la carte (palette désormais partagée sous le nom DRIVER_ROUTE_PALETTE, au lieu d'être une constante locale à traceRoutes) ; non intégré·es et indépendant·es restent en gris neutre, hors équipage. Validé par un jeu de tests isolés (bilan visuel avec et sans titre, regroupement de deux équipages consécutifs avec bonne couleur héritée par les passager·ères, choix de palier du tableau selon l'espace disponible, cas zéro personne concernée sans division par zéro) et par les 38/38 tests existants de tests_covoiturage.html, non affectés par ce chantier (aucune fonction qui y est dupliquée n'a été touchée)." },
+  { theme: "Export PDF / PNG", text: "Quatre corrections apportées par Valentin après un premier export réel, sur la refonte de l'entrée précédente. (1) La grande carte de la page 1 (capture directe de la vue à l'écran) laissait souvent une marge large autour du tracé — un cran de zoom en plus (captureMainMapForExport, comme un clic sur \"+\" juste avant la capture, vue à l'écran restaurée juste après) rapproche l'image. (2) La vignette de repère (bassin) masquait jusqu'ici marqueurs et tracés pour n'afficher qu'un fond de carte identique pour tout le bassin (avec mise en cache) — repéré par Valentin comme dénué de sens : sans les tracés, elle ne montre rien d'utile dans une zone dense en routes. Corrigé : captureLocatorMap (remplace getLocatorMapImage) garde marqueurs et tracés visibles, seul le cadrage géographique reste fixe par bassin ; la mise en cache par bassin, incompatible avec un contenu qui change à chaque groupe, est supprimée (plus simple, plus correcte). (3) Bug de police repéré sur la carte \"Véhicules évités\" : le texte apparaissait avec un espace entre chaque lettre et la flèche unicode \"→\" rendue comme des caractères illisibles — les polices intégrées de jsPDF (Helvetica/WinAnsi) ne supportent pas ce caractère, ce qui perturbe le calcul de largeur de splitTextToSize et casse le rendu de toute la ligne. Corrigé en reformulant la phrase sans flèche (déjà repéré ailleurs dans le fichier : le tiret cadratin \"—\" et le point médian \"·\", eux, font partie de l'encodage WinAnsi et s'affichent normalement). (4) Repéré par Valentin : CO2, coût et distance évités affichent TOUJOURS le même pourcentage, quel que soit le groupe — vérifié dans le code, ce n'est pas un hasard mais une conséquence structurelle de TRANSPORT_PROFILES (les trois modes voiture partagent le même g CO2/km et €/km, et ce sont les seuls modes des personnes \"concernées\" par le bilan : CO2 et coût sont donc de simples multiples du kilométrage, avec le même ratio évité que la distance). Les trois cartes séparées sont fusionnées en une seule (\"Impact évité\") : un pourcentage commun affiché une fois, suivi des trois valeurs absolues évitées (CO2, coût, distance) en dessous — la carte \"Véhicules évités\" reste inchangée à côté. Demande complémentaire, un espace entre équipages visiblement absent malgré la proposition initiale : ajouté via une ligne d'espacement fine et sans bordure insérée dans le tableau (buildGroupDetailPage) chaque fois que la clé d'équipage change (buildCrewInfo, qui remplace assignCrewColors et expose aussi ces clés) — les non intégré·es/indépendant·es restent groupé·es ensemble en fin de tableau, sans espace entre eux/elles. Validé par des tests isolés (absence de la flèche unicode dans le texte généré, une seule carte fusionnée au lieu de trois, espacement inséré uniquement entre équipages différents et jamais au sein du groupe hors équipage) et par les 38/38 tests existants de tests_covoiturage.html." },
 ];
 
 // ------------------------------------------------------------------
