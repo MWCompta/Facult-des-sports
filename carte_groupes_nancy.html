@@ -943,21 +943,30 @@ function renderMemberList() {
     const row = document.createElement('div');
     row.className = 'member-row' + (st.excluded ? ' excluded' : '');
 
-    // Une personne en "Covoiturage Passager/Passagère" n'a pas de véhicule propre : elle
-    // n'est jamais conductrice, et sera de toute façon ramassée par quelqu'un d'autre au
-    // traçage (voir pickupCandidates dans traceRoutes), que cette case soit cochée ou non.
-    // On l'affiche donc cochée-désactivée — pour qu'elle apparaisse visuellement comme
-    // faisant partie du trajet — plutôt que décochée-cliquable, ce qui laissait croire à
-    // tort qu'on pouvait la faire "conduire" en cochant la case (elle n'a pas de voiture).
-    const isPassagerSansVehicule = !st.excluded && activeTransportMode(m) === "Covoiturage en tant que Passager / Passagère";
+    // Une personne sans véhicule propre n'est jamais conductrice, et sera de toute façon
+    // ramassée par quelqu'un d'autre au traçage (voir pickupCandidates dans traceRoutes),
+    // que cette case soit cochée ou non — que ce soit parce qu'elle covoiture en tant que
+    // passager·ère (toujours vrai), ou parce que "Prendre tout le monde en compte" est
+    // actif (dans ce cas, ça vaut pour n'importe quel mode sans véhicule : bus, vélo,
+    // moto, à pied). On l'affiche donc cochée-désactivée — pour qu'elle apparaisse
+    // visuellement comme faisant partie du trajet — plutôt que décochée-cliquable, ce qui
+    // laissait croire à tort qu'on pouvait la faire "conduire" en cochant la case (elle n'a
+    // pas de voiture). Les personnes qui ont réellement un véhicule (isCarDriverMode)
+    // gardent toujours une case normale et cliquable, y compris en mode "tout le monde" :
+    // ce mode ne force jamais quelqu'un à conduire, seulement à être ramassable.
+    const activeMode = activeTransportMode(m);
+    const sansVehiculeMaisRamasse = !st.excluded && !isCarDriverMode(activeMode) &&
+      (activeMode === "Covoiturage en tant que Passager / Passagère" || everyoneMode);
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    if (isPassagerSansVehicule) {
+    if (sansVehiculeMaisRamasse) {
       cb.checked = true;
       cb.disabled = true;
-      cb.title = 'Covoiture en tant que passager·ère : sera ramassé·e par un·e conducteur·rice, rien à cocher ici.';
-      cb.setAttribute('aria-label', `${m.nom} covoiture en tant que passager·ère (sera ramassé·e)`);
+      cb.title = everyoneMode
+        ? 'Sans véhicule propre : sera ramassé·e par un·e conducteur·rice ("Prendre tout le monde en compte" est actif), rien à cocher ici.'
+        : 'Covoiture en tant que passager·ère : sera ramassé·e par un·e conducteur·rice, rien à cocher ici.';
+      cb.setAttribute('aria-label', `${m.nom} sera ramassé·e (pas de véhicule propre)`);
     } else {
       cb.checked = st.driver;
       cb.disabled = st.excluded;
@@ -1014,8 +1023,12 @@ function renderMemberList() {
       refreshIcon();
     });
 
+    // Inutile en mode "tout le monde" : ces personnes sont déjà automatiquement candidates
+    // au ramassage (voir sansVehiculeMaisRamasse ci-dessus et pickupCandidates dans
+    // traceRoutes) — le bouton n'aurait plus aucun effet, mieux vaut le masquer que
+    // laisser un bouton qui ne sert à rien à côté d'une case déjà cochée-désactivée.
     let forceBtn = null;
-    if (!isPickupEligible(activeTransportMode(m))) {
+    if (!everyoneMode && !isPickupEligible(activeTransportMode(m))) {
       forceBtn = document.createElement('button');
       forceBtn.type = 'button';
       forceBtn.className = 'force-btn' + (st.forceInclude ? ' active' : '');
@@ -3391,6 +3404,7 @@ const PROJECT_HISTORY = [
   { theme: "Algorithme de covoiturage", text: "Découpage de traceRoutes(), handleCsvImport() et exportAllGroups() en sous-fonctions plus courtes, demandé par Valentin sous réserve que ça n'entraîne aucun changement de comportement ni d'usage — vérifié à chaque étape (34/34 puis 38/38 tests, plus des vérifications isolées supplémentaires sur les fonctions extraites avant de les intégrer). Aucun nouveau fichier créé : tout reste dans carte_groupes_nancy.html, uniquement réorganisé. traceRoutes (436 → 222 lignes) : les 5 fonctions de l'algorithme de covoiturage, jusqu'ici imbriquées et donc non testables (bestInsertion, runSavingsConsolidation, l'étape de construction renommée insertPickupCandidates, localSearchImprove, et les métriques solo renommées computeSoloMetrics) sont sorties au niveau du fichier avec des paramètres explicites au lieu de variables capturées par fermeture — leur signature correspond maintenant exactement aux copies déjà dupliquées dans tests_covoiturage.html (bestInsertion et runSavingsConsolidation étaient déjà écrites ainsi côté tests, preuve qu'elles étaient bien testables sous cette forme). Le calcul des totaux resserrés et du détail par personne, jusqu'ici mêlé au reste, en sort aussi (buildTraceSummary). handleCsvImport (180 → 130 lignes) : extraction de parseImportRows (lignes brutes → lignes exploitables) et buildFinalRows (lignes exploitables + résultats de géocodage → lignes finales), toutes deux pures. exportAllGroups (166 → 79 lignes) : extraction de drawGlobalSummaryPage et appendGroupPagesToDoc, sur le même principe que les fonctions drawPageHeader/drawGroupBilan déjà présentes. tests_covoiturage.html mis à jour en conséquence : son ancien runConstruction (qui était une simplification approximative, pas une vraie copie) devient insertPickupCandidates avec la signature exacte du fichier principal ; parseImportRows et buildFinalRows dupliqués et testés (8 tests ajoutés au total, dont un a révélé une erreur dans le test lui-même — pas dans le code — repérée et corrigée avant validation)." },
   { theme: "Algorithme de covoiturage", text: "Deux corrections demandées par Valentin sur le précochage des conducteur·rices. (1) Bug trouvé et corrigé : `memberState` (cases cochées/exclues/plan B, par personne) n'était jamais remis à zéro lors d'un import normal (contrairement à \"Recréer les groupes par proximité\", qui le faisait déjà). Comme l'identifiant d'une personne est simplement sa position dans le fichier (1, 2, 3…), réimporter un fichier corrigé dans la même session sans recharger la page faisait hériter silencieusement à la personne de la ligne N tout l'état (coché, décoché, exclu…) de celle qui occupait la ligne N lors de l'import précédent, même si ce n'était plus la même personne — d'où des précochages visiblement erronés sans cause apparente. Corrigé : `memberState` et `savedTraceData` sont remis à zéro au début de handleCsvImport, comme le fait déjà regroupByGeography(). Démontré par un scénario isolé avant/après le correctif. (2) Précochage visuel étendu aux personnes en \"Covoiturage en tant que Passager / Passagère\" : n'ayant pas de véhicule propre, elles ne peuvent jamais être conductrices et sont de toute façon ramassées automatiquement au traçage (déjà le cas avant ce changement, voir pickupCandidates) — leur case à cocher, jusqu'ici décochée et cliquable (ce qui laissait croire à tort qu'on pouvait les faire \"conduire\"), s'affiche maintenant cochée et désactivée : adhésion visuelle au trajet sans risque de créer une conductrice fictive sans véhicule. Redevient une case normale et cliquable si la personne est exclue, ou si son mode actif change (ex. bascule sur un plan B \"voiture individuelle\"). st.driver reste toujours à false pour ces personnes : aucun changement sur le calcul de l'itinéraire, uniquement l'affichage. Validé par des scénarios isolés (personne non exclue, personne exclue, mode voiture inchangé, bascule plan B) avant intégration ; pas de test permanent ajouté pour cette dernière vérification (logique d'affichage simple, déjà revérifiée à la main)." },
   { theme: "Interface et accessibilité", text: "Confirmation de Valentin sur le correctif memberState de l'entrée précédente : le bug touchait en réalité TOUT premier import, pas seulement un réimport. Les 54 adresses de démonstration (aucune n'a de champ mode de déplacement) initialisent déjà memberState pour les id 1 à 54 dès le chargement de la page — donc le tout premier import réel d'une session était déjà, du point de vue du code, un \"deuxième jeu de données\" : quiconque occupait une des 54 premières lignes du fichier importé héritait à tort du driver=false des données de démo, quel que soit son vrai mode. Reproduit puis vérifié corrigé par un scénario isolé (personne #3 en \"Voiture individuelle\" dans les 54 premières lignes, correctement précochée après le correctif). Nouveau problème signalé dans la foulée : pendant un import, la colonne de gauche verrouillée (busy-lock, pointer-events: none) ne peut plus défiler — si la vue était descendue, impossible de remonter voir le compteur de progression (#subtitle, en haut de la colonne) avant la fin de l'import. Corrigé en dupliquant ce message à un second endroit toujours visible, juste sous le bouton \"Parcourir\" (nouvel élément #import-status) : une fonction setImportStatus() écrit désormais aux deux endroits à chaque mise à jour, remplaçant les écritures directes sur #subtitle dans handleCsvImport et handleRetryGeocode. Solution choisie parmi les deux proposées par Valentin (dupliquer l'affichage, plutôt que rendre la colonne défilable pendant le verrou) car nettement plus simple à implémenter sans risque de régression sur le verrou lui-même." },
+  { theme: "Algorithme de covoiturage", text: "Vérification demandée par Valentin de \"Mode mauvais temps\" et \"Prendre tout le monde en compte\" : les deux remplissent bien leur rôle (vérifié par des scénarios isolés — bascule vers le plan B uniquement pour les personnes à pied ayant un vrai plan B, sans toucher aux autres modes ; \"tout le monde\" rend bien chacun·e candidat·e au ramassage et vide la catégorie indépendant·e). Un point mineur relevé au passage : le bouton 🚗+ (\"forcer dans le covoiturage\") restait affiché même quand \"tout le monde\" le rendait déjà inutile. Proposition initiale de Valentin pour \"tout le monde\" : cocher littéralement la case de tout le monde dans tous les groupes, avec retour à l'état initial si redécochée. Déconseillé tel quel et remplacé par l'équivalent sûr déjà utilisé pour les passager·ères (entrée du 9 sept) : cocher réellement la case (st.driver = true) pour un mode sans véhicule (bus, vélo, moto, à pied) créerait une conductrice fictive sans voiture, faussant l'algorithme (une personne réellement véhiculée y perdrait une place dans une voiture qui n'existe pas). Solution retenue, validée par 8 scénarios isolés : la case cochée-désactivée déjà utilisée pour les passager·ères s'étend à tout mode sans véhicule dès que \"tout le monde\" est actif — dans le groupe affiché, quel qu'il soit, sans calcul préalable sur les 20 groupes. Les personnes ayant réellement une voiture gardent toujours leur case normale et cliquable (jamais forcées conductrices par ce mode). Le bouton 🚗+ est masqué quand \"tout le monde\" est actif (devenu redondant). Comme rien n'est modifié dans st.driver pour les personnes sans véhicule, décocher \"tout le monde\" restaure automatiquement l'affichage d'origine sans code de restauration nécessaire." },
 ];
 
 // ------------------------------------------------------------------
