@@ -71,6 +71,9 @@
   .custom-div-icon { background: transparent !important; border: none !important; }
   .capture-hide { display: none !important; }
   .capture-hide-permanent { display: none; }
+  /* Verrou global pendant une action longue (import, export, recréation des groupes) —
+     voir withBusyLock() dans le script : grise et bloque les clics sans rien masquer. */
+  .busy-lock { pointer-events: none; opacity: 0.55; transition: opacity 0.15s; }
   .retry-btn {
     width: 100%; margin-top: 8px; padding: 7px 10px; border-radius: 8px;
     border: 1px solid #fca5a5; background: #fef2f2; color: #b91c1c; font-size: 0.76rem;
@@ -1716,8 +1719,43 @@ function renderResults(driverInfos, totals, usedFallback, unassignedNames) {
 // ------------------------------------------------------------------
 // 13. ÉVÉNEMENTS — BASCULES ET ACTIONS DU PANNEAU GROUPE
 // Branchement des boutons/cases de la barre latérale sur l'état global (section 6) et les
-// fonctions d'affichage/calcul déjà définies plus haut.
+// fonctions d'affichage/calcul déjà définies plus haut. Contient aussi le verrou global
+// (withBusyLock, juste en dessous) qui protège les actions longues entre elles.
 // ------------------------------------------------------------------
+
+// Verrou global entre actions longues (import, géocodage, export, recréation des groupes).
+// Sans lui, rien n'empêchait de cliquer sur un autre bouton pendant qu'une opération async
+// est déjà en cours (ex. lancer "Recréer les groupes" pendant un export groupé) — `data`
+// ou le groupe affiché pourrait alors changer en plein milieu d'un calcul, et corrompre
+// son résultat. Verrouille la barre latérale ET la modale "adresses à vérifier" (ses
+// boutons Exclure mutent `data`) — PAS la modale de confirmation Oui/Non (yesno-modal :
+// c'est justement par elle que ces opérations demandent une confirmation en cours de
+// route, elle doit rester cliquable), ni la carte (pan/zoom restent libres), ni la modale
+// Historique (purement en lecture, aucun risque).
+let appBusyLabel = null;
+function setBusyLock(active) {
+  [document.getElementById('sidebar'), document.getElementById('failed-modal')].forEach(el => {
+    if (el) el.classList.toggle('busy-lock', active);
+  });
+}
+// Empêche de lancer une opération protégée pendant qu'une autre est déjà en cours (affiche
+// laquelle) ; sinon verrouille l'interface pour toute la durée de fn() (async), et la
+// déverrouille systématiquement ensuite, même si fn() lève une erreur.
+async function withBusyLock(label, fn) {
+  if (appBusyLabel) {
+    alert(`Une autre opération est en cours (${appBusyLabel}). Attendez qu'elle se termine avant de lancer "${label}".`);
+    return;
+  }
+  appBusyLabel = label;
+  setBusyLock(true);
+  try {
+    await fn();
+  } finally {
+    appBusyLabel = null;
+    setBusyLock(false);
+  }
+}
+
 document.getElementById('btn-general').addEventListener('click', () => { viewFilter = 'all'; selectGroup(null); });
 document.getElementById('btn-nancy').addEventListener('click', () => { viewFilter = 'nancy'; selectGroup(null); });
 document.getElementById('btn-epinal').addEventListener('click', () => { viewFilter = 'epinal'; selectGroup(null); });
@@ -1764,7 +1802,7 @@ document.getElementById('everyone-mode-toggle').addEventListener('change', (e) =
   renderMemberList();
   updateRouteStatus();
 });
-document.getElementById('trace-btn').addEventListener('click', traceRoutes);
+document.getElementById('trace-btn').addEventListener('click', () => withBusyLock('traçage de l\'itinéraire', traceRoutes));
 
 document.getElementById('dest-override-apply').addEventListener('click', async () => {
   if (selectedGroup === null) return;
@@ -1774,33 +1812,35 @@ document.getElementById('dest-override-apply').addEventListener('click', async (
   const scope = document.querySelector('input[name="dest-scope"]:checked').value; // 'group' | 'basin'
   const basin = basinOf(selectedGroup);
 
-  const btn = document.getElementById('dest-override-apply');
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Géolocalisation…';
-  try {
-    const g = await geocodeAddress(address, '');
-    if (!g) {
-      alert(`Adresse introuvable : "${address}". Vérifiez l'orthographe ou essayez une formulation plus précise (numéro, rue, ville).`);
-      return;
+  await withBusyLock('destination temporaire', async () => {
+    const btn = document.getElementById('dest-override-apply');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Géolocalisation…';
+    try {
+      const g = await geocodeAddress(address, '');
+      if (!g) {
+        alert(`Adresse introuvable : "${address}". Vérifiez l'orthographe ou essayez une formulation plus précise (numéro, rue, ville).`);
+        return;
+      }
+      const override = { lat: g.lat, lon: g.lon, label: address };
+      let affected;
+      if (scope === 'group') {
+        groupDestinationOverrides.set(String(selectedGroup), override);
+        affected = [selectedGroup];
+      } else {
+        basinDestinationOverrides[basin] = override;
+        affected = groupList.filter(gr => basinOf(gr) === basin);
+      }
+      input.value = '';
+      invalidateAfterDestChange(affected);
+    } catch (err) {
+      alert("Erreur pendant la géolocalisation de cette adresse. Réessayez dans un instant.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
     }
-    const override = { lat: g.lat, lon: g.lon, label: address };
-    let affected;
-    if (scope === 'group') {
-      groupDestinationOverrides.set(String(selectedGroup), override);
-      affected = [selectedGroup];
-    } else {
-      basinDestinationOverrides[basin] = override;
-      affected = groupList.filter(gr => basinOf(gr) === basin);
-    }
-    input.value = '';
-    invalidateAfterDestChange(affected);
-  } catch (err) {
-    alert("Erreur pendant la géolocalisation de cette adresse. Réessayez dans un instant.");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = original;
-  }
+  });
 });
 
 document.getElementById('reset-group-btn').addEventListener('click', () => {
@@ -2363,31 +2403,33 @@ async function exportAllGroups() {
     btn.textContent = original;
   }
 }
-document.getElementById('export-all-btn').addEventListener('click', exportAllGroups);
+document.getElementById('export-all-btn').addEventListener('click', () => withBusyLock('export de tous les groupes', exportAllGroups));
 
 document.getElementById('capture-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('capture-btn');
-  const original = btn.textContent;
   if (typeof html2canvas === 'undefined') {
     alert("La bibliothèque de capture n'a pas pu être chargée (connexion au CDN indisponible).");
     return;
   }
-  btn.disabled = true;
-  btn.textContent = 'Export en cours…';
-  const label = selectedGroup === null ? 'vue-generale' : `groupe-${selectedGroup}`;
+  await withBusyLock('export du groupe affiché', async () => {
+    const btn = document.getElementById('capture-btn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Export en cours…';
+    const label = selectedGroup === null ? 'vue-generale' : `groupe-${selectedGroup}`;
 
-  try {
-    await exportAsPdf(label);
-  } catch (pdfErr) {
     try {
-      await exportAsPng(label);
-    } catch (pngErr) {
-      alert("L'export a échoué (PDF et PNG). Essayez un autre fond de carte (icône en haut à droite), ou une capture d'écran manuelle.");
+      await exportAsPdf(label);
+    } catch (pdfErr) {
+      try {
+        await exportAsPng(label);
+      } catch (pngErr) {
+        alert("L'export a échoué (PDF et PNG). Essayez un autre fond de carte (icône en haut à droite), ou une capture d'écran manuelle.");
+      }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
     }
-  } finally {
-    btn.disabled = false;
-    btn.textContent = original;
-  }
+  });
 });
 
 // ------------------------------------------------------------------
@@ -2610,7 +2652,7 @@ function detectColumnMapping(headerRow) {
 // pour redistribuer entièrement les personnes actuellement chargées en nouveaux groupes
 // par proximité géographique (Nancy et Épinal restent deux populations séparées).
 // ------------------------------------------------------------------
-function regroupByGeography() {
+async function regroupByGeography() {
   if (data.length === 0) { alert('Aucune donnée chargée à regrouper.'); return; }
 
   const nancyPeople = data.filter(d => !isEpinalGroup(d.groupe));
@@ -2640,60 +2682,59 @@ function regroupByGeography() {
   btn.textContent = 'Recalcul en cours…';
 
   // laisse le navigateur peindre le changement de bouton avant un calcul potentiellement long
-  setTimeout(() => {
-    try {
-      const reports = [];
-      const RESTARTS = 5;
+  await sleep(50);
+  try {
+    const reports = [];
+    const RESTARTS = 5;
 
-      if (nancyPeople.length > 0) {
-        const k = kNancy;
-        const targetSizes = computeTargetSizes(nancyPeople.length, k);
-        const result = clusterWithRestarts(nancyPeople, k, targetSizes, RESTARTS, MIN_CAR_PER_GROUP);
-        nancyPeople.forEach((p, i) => { p.groupe = String(result.assignments[i] + 1); });
-        const carCounts = new Array(k).fill(0);
-        nancyPeople.forEach((p, i) => { if (hasCarCapability(p)) carCounts[result.assignments[i]]++; });
-        const lines = targetSizes.map((size, i) =>
-          `groupe ${i + 1} : ${size} personne(s), ${carCounts[i]} conducteur·rice(s)${carCounts[i] < MIN_CAR_PER_GROUP ? ' ⚠️' : ''}`
-        );
-        reports.push(`Nancy — ${k} groupes :\n` + lines.join('\n'));
-      }
-      if (epinalPeople.length > 0) {
-        const k = kEpinal;
-        const targetSizes = computeTargetSizes(epinalPeople.length, k);
-        const result = clusterWithRestarts(epinalPeople, k, targetSizes, RESTARTS, MIN_CAR_PER_GROUP);
-        epinalPeople.forEach((p, i) => { p.groupe = String(16 + result.assignments[i] + 1); });
-        const carCounts = new Array(k).fill(0);
-        epinalPeople.forEach((p, i) => { if (hasCarCapability(p)) carCounts[result.assignments[i]]++; });
-        const lines = targetSizes.map((size, i) =>
-          `groupe ${17 + i} : ${size} personne(s), ${carCounts[i]} conducteur·rice(s)${carCounts[i] < MIN_CAR_PER_GROUP ? ' ⚠️' : ''}`
-        );
-        reports.push(`Épinal — ${k} groupes :\n` + lines.join('\n'));
-      }
-
-      // Les groupes eux-mêmes ont changé : tout paramétrage par groupe est obsolète.
-      memberState = new Map();
-      savedTraceData = new Map();
-      failedImportRows = [];
-      routeResult = null;
-      unassignedIds = new Set();
-      lastTraceData = null;
-      selectedGroup = null;
-      routeLayerGroup.clearLayers();
-      document.getElementById('route-results').innerHTML = '';
-      updateRetryButton();
-      initializeAllMemberStates();
-
-      initFromData();
-      alert('Nouveaux groupes créés à partir des adresses actuelles.\n\n' + reports.join('\n\n'));
-    } catch (err) {
-      alert('Erreur lors du recalcul des groupes : ' + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = original;
+    if (nancyPeople.length > 0) {
+      const k = kNancy;
+      const targetSizes = computeTargetSizes(nancyPeople.length, k);
+      const result = clusterWithRestarts(nancyPeople, k, targetSizes, RESTARTS, MIN_CAR_PER_GROUP);
+      nancyPeople.forEach((p, i) => { p.groupe = String(result.assignments[i] + 1); });
+      const carCounts = new Array(k).fill(0);
+      nancyPeople.forEach((p, i) => { if (hasCarCapability(p)) carCounts[result.assignments[i]]++; });
+      const lines = targetSizes.map((size, i) =>
+        `groupe ${i + 1} : ${size} personne(s), ${carCounts[i]} conducteur·rice(s)${carCounts[i] < MIN_CAR_PER_GROUP ? ' ⚠️' : ''}`
+      );
+      reports.push(`Nancy — ${k} groupes :\n` + lines.join('\n'));
     }
-  }, 50);
+    if (epinalPeople.length > 0) {
+      const k = kEpinal;
+      const targetSizes = computeTargetSizes(epinalPeople.length, k);
+      const result = clusterWithRestarts(epinalPeople, k, targetSizes, RESTARTS, MIN_CAR_PER_GROUP);
+      epinalPeople.forEach((p, i) => { p.groupe = String(16 + result.assignments[i] + 1); });
+      const carCounts = new Array(k).fill(0);
+      epinalPeople.forEach((p, i) => { if (hasCarCapability(p)) carCounts[result.assignments[i]]++; });
+      const lines = targetSizes.map((size, i) =>
+        `groupe ${17 + i} : ${size} personne(s), ${carCounts[i]} conducteur·rice(s)${carCounts[i] < MIN_CAR_PER_GROUP ? ' ⚠️' : ''}`
+      );
+      reports.push(`Épinal — ${k} groupes :\n` + lines.join('\n'));
+    }
+
+    // Les groupes eux-mêmes ont changé : tout paramétrage par groupe est obsolète.
+    memberState = new Map();
+    savedTraceData = new Map();
+    failedImportRows = [];
+    routeResult = null;
+    unassignedIds = new Set();
+    lastTraceData = null;
+    selectedGroup = null;
+    routeLayerGroup.clearLayers();
+    document.getElementById('route-results').innerHTML = '';
+    updateRetryButton();
+    initializeAllMemberStates();
+
+    initFromData();
+    alert('Nouveaux groupes créés à partir des adresses actuelles.\n\n' + reports.join('\n\n'));
+  } catch (err) {
+    alert('Erreur lors du recalcul des groupes : ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
-document.getElementById('regroup-btn').addEventListener('click', regroupByGeography);
+document.getElementById('regroup-btn').addEventListener('click', () => withBusyLock('recréation des groupes par proximité', regroupByGeography));
 
 // ------------------------------------------------------------------
 // 23. IMPORT — LECTURE DU FICHIER CHOISI PAR L'UTILISATEUR
@@ -2704,6 +2745,12 @@ document.getElementById('regroup-btn').addEventListener('click', regroupByGeogra
 document.getElementById('csv-input').addEventListener('change', async function (e) {
   const file = e.target.files[0];
   if (!file) return;
+  await withBusyLock('import de fichier', () => handleCsvImport(file));
+});
+
+// Corps du traitement d'import, extrait dans sa propre fonction pour pouvoir être appelé
+// depuis withBusyLock() ci-dessus (verrou global, section 13) sans tout réindenter.
+async function handleCsvImport(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   const subtitle = document.getElementById('subtitle');
   const originalSubtitle = subtitle.textContent;
@@ -2882,10 +2929,16 @@ document.getElementById('csv-input').addEventListener('change', async function (
   initializeAllMemberStates();
   subtitle.textContent = `${data.length} adresses géolocalisées.`;
   initFromData();
-});
+}
 
 document.getElementById('retry-geocode-btn').addEventListener('click', async () => {
   if (failedImportRows.length === 0) return;
+  await withBusyLock('nouvel essai de géocodage', handleRetryGeocode);
+});
+
+// Corps du traitement de reprise, extrait dans sa propre fonction pour pouvoir être appelé
+// depuis withBusyLock() ci-dessus (verrou global, section 13) sans tout réindenter.
+async function handleRetryGeocode() {
   const btn = document.getElementById('retry-geocode-btn');
   const rowsToRetry = failedImportRows;
   btn.disabled = true;
@@ -2949,7 +3002,7 @@ document.getElementById('retry-geocode-btn').addEventListener('click', async () 
   if (lowConfidence > 0) msg.push(`${lowConfidence} avec une confiance faible parmi les récupérées.`);
   alert(msg.join(' '));
   btn.disabled = false;
-});
+}
 
 // ------------------------------------------------------------------
 // 24. DOUBLONS ET QUALITÉ DES DONNÉES IMPORTÉES
@@ -3255,6 +3308,7 @@ const PROJECT_HISTORY = [
   { theme: "Données, import et géocodage", text: "Chantier de fiabilisation de l'import lancé (repéré comme point ouvert lors de la session précédente) : les colonnes du fichier importé sont maintenant identifiées par mot-clé dans la ligne d'en-tête (ex. \"nom\", \"prénom\", \"groupe\", \"rue\"/\"adresse\", \"code postal\", \"ville\", \"déplacement\", \"plan B\"/\"secours\", \"places\", \"abonnement\"/\"stabilité\", \"covoiturage\"+\"souhait\"), plutôt que par leur position fixe (C à Q) — un réordonnancement futur des questions du Google Form ne décale donc plus silencieusement l'import. Repli automatique sur les positions fixes historiques, avec avertissement explicite affiché à l'utilisateur, si l'en-tête ne permet pas d'identifier tous les champs indispensables (nom, prénom, groupe, adresse, mode de déplacement) — pour ne jamais dégrader silencieusement un import qui fonctionnait avant. Piège corrigé en cours de route : le mot-clé \"place\" est une sous-chaîne de \"déplacement\" (capturait à tort la colonne du mode de déplacement comme colonne \"places\") et \"adresse\" apparaît aussi dans \"Adresse e-mail\" (capturait à tort la colonne e-mail comme colonne rue) — les deux corrigés (mots entiers pour \"places\", exclusion de \"mail\" pour la colonne rue). Limite connue, assumée : les mots-clés ont été choisis sur des intitulés plausibles, pas sur l'en-tête réel du formulaire (non disponible pour écrire ce code) — à vérifier sur un vrai export avant de s'y fier pour une passation réelle ; en cas de désaccord de mots-clés, le repli avec avertissement protège d'un import silencieusement faux. Validé par 6 tests dédiés (en-tête actuel, en-tête réordonné, e-mail non confondu avec l'adresse, en-tête non reconnaissable déclenchant le repli, en-tête vide, accents/casse ignorés), ajoutés à tests_covoiturage.html — 27/27 tests passent." },
   { theme: "Documentation et lisibilité du code", text: "Nouvelle règle actée avec Valentin : chaque changement de code doit désormais s'accompagner d'une entrée dans cet historique (déjà la pratique jusqu'ici, maintenant formalisée comme un accord explicite). Passage de relecture complet du fichier (les ~3000 lignes, aucune ligne non lue) pour ajouter des repères de navigation, sans toucher au comportement : un sommaire en tête du script (30 sections numérotées, correspondance directe avec des bannières identiques plus bas, Ctrl+F le titre en MAJUSCULES pour y aller), et des bannières de section ajoutées à tous les endroits qui n'en avaient pas. Deux confusions préexistantes corrigées au passage (commentaires uniquement, aucun changement de comportement) : un commentaire décrivant l'algorithme de ramassage (construction + amélioration locale) était placé au-dessus de haversine() au lieu d'être au-dessus de traceRoutes() où il s'applique réellement ; et le commentaire décrivant la structure du formulaire d'import était au-dessus de regroupByGeography() (la recréation de groupes par proximité) au lieu d'être au-dessus du vrai gestionnaire d'import (l'écouteur sur csv-input) — les deux déplacés au bon endroit. Nouveau thème \"Documentation et lisibilité du code\" créé pour ce type d'entrée, aucun thème existant ne convenant." },
   { theme: "Données, import et géocodage", text: "Relecture complète demandée par Valentin (recherche d'erreurs et de code non pertinent) : quatre corrections appliquées. (1) MODE_COLORS n'avait pas d'entrée pour \"Vélo mécanique / Roller / Trottinette\", pourtant présent dans TRANSPORT_ICONS et TRANSPORT_PROFILES depuis son ajout — ce mode s'affichait sans couleur de fond (blanc) dans les exports PDF/PNG, contrairement à tous les autres ; couleur ajoutée. (2) Le bouton \"Réessayer les adresses non géolocalisées\" ne redemandait que l'adresse principale : une personne ayant fourni deux adresses et dont la principale avait échoué au premier import perdait alors définitivement sa deuxième adresse une fois récupérée (latPrimary/lonPrimary/lat2/lon2 jamais renseignés) — la case \"adresse la plus proche\" n'avait plus alors aucun effet pour elle, silencieusement. Corrigé : la reprise redemande maintenant aussi l'adresse secondaire si la personne en avait indiqué une, et reconstruit la ligne à l'identique de l'import initial ; applyClosestAddressPreference() est aussi rappelée après la reprise, ce qui ne l'était pas non plus. (3) Doublon détecté sur la détection de doublons (detectDuplicates) : la clé de regroupement (nom complet + adresse, sans ville) était incohérente avec la comparaison \"identique\" (qui inclut la ville) sans que ce soit documenté ; clarifié par un commentaire — Valentin a confirmé vouloir prénom + nom + adresse (déjà le cas : le champ `nom` contient \"Prénom Nom\" concaténés dès l'import, il n'existe pas de nom de famille séparé à ce stade) et a explicitement refusé d'y ajouter la ville ou le code postal (plus de risque de rater un vrai doublon que d'en signaler un faux) : comportement inchangé, juste rendu explicite. (4) Indentation corrigée à deux endroits (renderMemberList) où une ligne `lastTraceData = null;` avait un retrait à 2 espaces au lieu de 6 — sans effet fonctionnel. Nettoyage additionnel : une variable `originalSubtitle` non utilisée a été retirée du gestionnaire de reprise pendant sa réécriture. 6 tests ajoutés à tests_covoiturage.html pour ces quatre points (synchronisation des trois listes de modes de transport, doublons avec prénoms différents/villes différentes, préservation de la 2e adresse après reprise avec mock réseau) — 33/33 tests passent. Un point plus large signalé mais volontairement non traité (demande explicite d'en discuter avant) : aucun verrou global n'empêche de lancer une autre action longue (import, export groupé, recréation des groupes) pendant qu'une autre est déjà en cours." },
+  { theme: "Interface et accessibilité", text: "Verrou global ajouté (point signalé lors de la relecture précédente, traitement demandé par Valentin) : withBusyLock() empêche désormais de lancer une action de fond pendant qu'une autre est déjà en cours — import de fichier, nouvel essai de géocodage, recréation des groupes par proximité, traçage d'un itinéraire, export (simple ou groupé), destination temporaire. Pendant une de ces actions, la barre latérale et la modale \"Adresses à vérifier et doublons\" (ses boutons Exclure mutent `data`) sont grisées et non cliquables (pointer-events: none, sans rien masquer) ; un clic sur une autre action protégée pendant ce temps affiche un message nommant l'action en cours plutôt que de s'exécuter. Delibérément PAS verrouillées : la modale de confirmation Oui/Non (c'est justement par elle que ces mêmes actions demandent une confirmation en cours de route — la verrouiller aurait bloqué l'application) et la carte (pan/zoom restent libres). Le verrou se libère toujours, y compris si l'action plante (try/finally). regroupByGeography() converti en fonction async (son setTimeout de 50ms, gardé pour laisser le navigateur peindre le bouton avant le calcul, devient un await sleep(50) équivalent) ; les corps du gestionnaire d'import (csv-input) et du bouton \"Réessayer\" ont été extraits dans des fonctions nommées (handleCsvImport, handleRetryGeocode) pour être appelables depuis le verrou sans tout réindenter. Détail cosmétique assumé, non corrigé : dans regroupByGeography() et exportAllGroups(), le verrou se pose une fraction de seconde avant que la boîte de confirmation (confirm()/askYesNo()) ne s'affiche — la barre latérale se grise donc légèrement avant que l'utilisateur ait confirmé, sans aucune conséquence fonctionnelle (le verrou se libère normalement si l'utilisateur annule). Validé par une simulation isolée (verrouillage mutuel, message d'attente correct, libération garantie même après une erreur dans l'action) portée en test dans tests_covoiturage.html — 34/34 tests passent." },
 ];
 
 // ------------------------------------------------------------------

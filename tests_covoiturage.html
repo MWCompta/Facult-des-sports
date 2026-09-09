@@ -622,6 +622,59 @@ test('bouton "Réessayer" : une adresse toujours introuvable reste en échec san
   assert(recovered.length === 0 && stillFailed.length === 1, 'doit rester en échec, sans lever d\'erreur');
 });
 
+// Verrou global entre actions longues — dupliqué depuis carte_groupes_nancy.html. Le
+// basculement réel des classes CSS (sidebar/failed-modal) n'est pas testable ici (ces
+// éléments n'existent pas sur cette page de tests) : setBusyLock() garde son `if (el)`,
+// donc ne fait simplement rien de plus ici — ce qui est vérifié séparément dans le fichier
+// principal. Ce qui est testé : la logique de verrouillage/déverrouillage elle-même.
+let appBusyLabel = null;
+function setBusyLock(active) {
+  [document.getElementById('sidebar'), document.getElementById('failed-modal')].forEach(el => {
+    if (el) el.classList.toggle('busy-lock', active);
+  });
+}
+async function withBusyLock(label, fn) {
+  if (appBusyLabel) {
+    alert(`Une autre opération est en cours (${appBusyLabel}). Attendez qu'elle se termine avant de lancer "${label}".`);
+    return;
+  }
+  appBusyLabel = label;
+  setBusyLock(true);
+  try {
+    await fn();
+  } finally {
+    appBusyLabel = null;
+    setBusyLock(false);
+  }
+}
+// alert() bloquerait l'ouverture de cette page de tests dans un navigateur : capturé au
+// lieu d'être affiché, uniquement pour ces tests (aucune autre fonction testée ici n'appelle alert()).
+const capturedAlerts = [];
+window.alert = (msg) => capturedAlerts.push(msg);
+
+// Un seul test englobant les deux scénarios (plutôt que deux tests séparés) : le petit
+// framework ci-dessus ne met PAS en pause un test le temps qu'un autre test asynchrone se
+// termine (seul l'affichage final attend `pendingTests`), donc deux tests séparés touchant
+// le même état partagé (appBusyLabel) s'exécuteraient en réalité entrelacés l'un dans
+// l'autre et se marcheraient dessus. En les regroupant dans un seul test, tout se déroule
+// dans l'ordre écrit ci-dessous, sans interférence d'un autre test entre-temps.
+test('withBusyLock : verrouillage mutuel, message d\'attente, et libération même après erreur', async () => {
+  // Une deuxième action est refusée pendant qu'une première tourne.
+  let bRan = false;
+  const pA = withBusyLock('Action A', () => new Promise(r => setTimeout(r, 30)));
+  await new Promise(r => setTimeout(r, 5)); // laisse A démarrer et poser le verrou
+  await withBusyLock('Action B', async () => { bRan = true; });
+  assert(bRan === false, 'B ne doit pas s\'exécuter pendant que A tourne');
+  assert(capturedAlerts.some(m => m.includes('Action A')), 'un message doit prévenir que A est en cours');
+  await pA; // attend la fin réelle de A avant de continuer
+
+  // Le verrou est bien libéré après A, y compris si l'action suivante plante.
+  try { await withBusyLock('Action qui plante', async () => { throw new Error('boom'); }); } catch (e) {}
+  let cRan = false;
+  await withBusyLock('Action suivante', async () => { cRan = true; });
+  assert(cRan === true, 'une action suivante doit pouvoir s\'exécuter (le verrou ne doit pas rester coincé)');
+});
+
 // ------------------------------------------------------------------
 // Affichage — attend d'abord que les tests asynchrones (géocodage) soient résolus.
 // ------------------------------------------------------------------
