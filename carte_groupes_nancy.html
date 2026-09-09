@@ -2392,10 +2392,90 @@ function readCsvRows(file) {
 }
 
 // ------------------------------------------------------------------
-// IMPORT — structure exacte du formulaire Google Forms (export Sheets/xlsx) :
-// C=Nom, D=Prénom, E=Groupe, F/G/H=rue/CP/ville, I="adresse principale ?",
-// J/K/L=rue/CP/ville alternatives (utilisées si I = "Non (adresse temporaire)"),
-// M=mode de déplacement, N=places disponibles (conducteur).
+// DÉTECTION DES COLONNES — par mot-clé dans l'en-tête plutôt que par position fixe.
+// Jusqu'ici l'import supposait un ordre de colonnes figé (C=Nom, D=Prénom, E=Groupe,
+// F/G/H=adresse principale, I=bascule adresse principale/temporaire, J/K/L=adresse
+// secondaire, M=mode de déplacement, N=places, O=stabilité abonnement, P=plan B,
+// Q=souhait covoiturage) : si les questions du Google Form sont un jour réordonnées,
+// l'import décalait silencieusement toutes les colonnes sans qu'on s'en aperçoive.
+// On cherche maintenant chaque champ par mot-clé dans la ligne d'en-tête (accents et
+// casse ignorés). Repli automatique sur les positions fixes ci-dessus, avec avertissement
+// affiché à l'utilisateur, si l'en-tête ne permet pas d'identifier tous les champs
+// indispensables (nom, prénom, groupe, adresse principale, mode de déplacement) — ce
+// repli suppose alors que la structure n'a pas changé, comme avant ce chantier.
+// Limite connue : les mots-clés ont été choisis sur des intitulés plausibles, pas sur
+// l'en-tête réel du formulaire (non disponible au moment d'écrire ce code) — à confirmer
+// sur un vrai export avant d'en dépendre pour une passation réelle.
+// ------------------------------------------------------------------
+const LEGACY_FIXED_COLUMNS = {
+  nom: 2, prenom: 3, groupe: 4,
+  adressePrincipale: 8, rue1: 5, cp1: 6, ville1: 7, rue2: 9, cp2: 10, ville2: 11,
+  deplacement: 12, places: 13, situation: 14, deplacementSecours: 15, optIn: 16
+};
+
+function stripAccents(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+function normalizeHeader(s) {
+  return stripAccents(s).toLowerCase().replace(/[^a-z0-9? ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Ordre = priorité en cas de chevauchement sur une même cellule d'en-tête (règles les
+// plus spécifiques d'abord ; "rue" en dernier, car la plus permissive : elle attrape tout
+// intitulé contenant "adresse" non déjà pris par la règle "adresse principale").
+const HEADER_FIELD_RULES = [
+  { key: 'adressePrincipale', test: h => h.includes('principal') && h.includes('adresse') },
+  { key: 'deplacementSecours', test: h => h.includes('secours') || h.includes('plan b') },
+  { key: 'optIn', test: h => h.includes('covoiturage') && /souhait|voulez|interess|participer/.test(h) },
+  { key: 'situation', test: h => h.includes('abonnement') || h.includes('stabilit') },
+  // \bplaces?\b (pas un simple includes) : "déplacement" contient la sous-chaîne "place"
+  // et serait sinon capté ici avant même la règle "deplacement".
+  { key: 'places', test: h => /\bplaces?\b/.test(h) },
+  { key: 'deplacement', test: h => h.includes('deplacement') || h.includes('mode de transport') },
+  { key: 'prenom', test: h => /\bprenom\b/.test(h) },
+  { key: 'nom', test: h => /\bnom\b/.test(h) && !/\bprenom\b/.test(h) && !h.includes('groupe') },
+  { key: 'groupe', test: h => /\bgroupe\b/.test(h) },
+  { key: 'cp', test: h => h.includes('code postal') || /\bcp\b/.test(h) },
+  { key: 'ville', test: h => /\bville\b|\bcommune\b/.test(h) },
+  // Exclut "adresse e-mail"/"adresse mail" : un vrai champ d'adresse postale, contrairement
+  // à un champ email, ne contient jamais "mail".
+  { key: 'rue', test: h => (h.includes('rue') || h.includes('adresse')) && !h.includes('mail') }
+];
+// Colonnes pouvant légitimement apparaître deux fois (adresse principale + secondaire) —
+// la première occurrence rencontrée dans l'en-tête devient la principale, la seconde la
+// secondaire. Les autres champs ne prennent que la première occurrence trouvée.
+const HEADER_DUAL_KEYS = ['rue', 'cp', 'ville'];
+const HEADER_REQUIRED_FIELDS = ['nom', 'prenom', 'groupe', 'rue1', 'ville1', 'deplacement'];
+
+function detectColumnMapping(headerRow) {
+  const dual = { rue: [], cp: [], ville: [] };
+  const single = {};
+  (headerRow || []).forEach((raw, i) => {
+    const h = normalizeHeader(raw);
+    if (!h) return;
+    const rule = HEADER_FIELD_RULES.find(r => r.test(h));
+    if (!rule) return;
+    if (HEADER_DUAL_KEYS.includes(rule.key)) {
+      if (dual[rule.key].length < 2) dual[rule.key].push(i);
+    } else if (single[rule.key] === undefined) {
+      single[rule.key] = i;
+    }
+  });
+  const mapping = {
+    nom: single.nom, prenom: single.prenom, groupe: single.groupe,
+    adressePrincipale: single.adressePrincipale,
+    rue1: dual.rue[0], cp1: dual.cp[0], ville1: dual.ville[0],
+    rue2: dual.rue[1], cp2: dual.cp[1], ville2: dual.ville[1],
+    deplacement: single.deplacement, deplacementSecours: single.deplacementSecours,
+    places: single.places, situation: single.situation, optIn: single.optIn
+  };
+  const missing = HEADER_REQUIRED_FIELDS.filter(k => mapping[k] === undefined);
+  return { mapping, missing };
+}
+
+// ------------------------------------------------------------------
+// IMPORT — structure du formulaire Google Forms (export Sheets/xlsx), colonnes
+// identifiées par mot-clé d'en-tête (voir ci-dessus) plutôt que par position fixe.
 // Remplace les données par un fichier fourni par l'utilisateur, avec géocodage.
 // ------------------------------------------------------------------
 function regroupByGeography() {
@@ -2498,13 +2578,18 @@ document.getElementById('csv-input').addEventListener('change', async function (
     return;
   }
 
+  const headerRow = (rows || [])[0] || [];
   const dataRows = (rows || []).slice(1).filter(r => Array.isArray(r) && r.some(c => c !== undefined && c !== ''));
   if (dataRows.length === 0) {
     alert("Aucune ligne de données trouvée (le fichier ne contient peut-être que l'en-tête).");
     return;
   }
 
-  const cell = (r, i) => (r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
+  const detection = detectColumnMapping(headerRow);
+  const usedFallbackColumns = detection.missing.length > 0;
+  const colMap = usedFallbackColumns ? LEGACY_FIXED_COLUMNS : detection.mapping;
+
+  const cell = (r, i) => (i !== undefined && r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
   // Restriction sur les champs texte libre saisis par les répondant·es : les caractères
   // < > sont retirés avant même d'entrer dans les données (en plus de l'échappement à
   // l'affichage), pour éviter tout comportement imprévu si l'un d'eux apparaît par erreur.
@@ -2516,31 +2601,31 @@ document.getElementById('csv-input').addEventListener('change', async function (
   };
 
   let parsedRows = dataRows.map((r, i) => {
-    const useAlt = cell(r, 8) === 'Non (adresse temporaire)';
-    const placesN = parseInt(cell(r, 13), 10);
+    const useAlt = colMap.adressePrincipale !== undefined && cell(r, colMap.adressePrincipale) === 'Non (adresse temporaire)';
+    const placesN = parseInt(cell(r, colMap.places), 10);
     // rue2/cp2/ville2 : l'autre adresse (celle non retenue par défaut), quand la personne
     // en a renseigné deux — sert uniquement si "adresse la plus proche" est activé.
-    const rue2 = useAlt ? cellClean(r, 5) : cellClean(r, 9);
-    const cp2 = useAlt ? cell(r, 6) : cell(r, 10);
-    const ville2 = useAlt ? cellClean(r, 7) : cellClean(r, 11);
+    const rue2 = useAlt ? cellClean(r, colMap.rue1) : cellClean(r, colMap.rue2);
+    const cp2 = useAlt ? cell(r, colMap.cp1) : cell(r, colMap.cp2);
+    const ville2 = useAlt ? cellClean(r, colMap.ville1) : cellClean(r, colMap.ville2);
     return {
       id: i + 1,
-      groupe: cell(r, 4) || 'N/A',
-      nom: (cellClean(r, 3) + ' ' + cellClean(r, 2)).trim() || `Membre ${i + 1}`,
-      rue: useAlt ? cellClean(r, 9) : cellClean(r, 5),
-      cp: useAlt ? cell(r, 10) : cell(r, 6),
-      ville: useAlt ? cellClean(r, 11) : cellClean(r, 7),
+      groupe: cell(r, colMap.groupe) || 'N/A',
+      nom: (cellClean(r, colMap.prenom) + ' ' + cellClean(r, colMap.nom)).trim() || `Membre ${i + 1}`,
+      rue: useAlt ? cellClean(r, colMap.rue2) : cellClean(r, colMap.rue1),
+      cp: useAlt ? cell(r, colMap.cp2) : cell(r, colMap.cp1),
+      ville: useAlt ? cellClean(r, colMap.ville2) : cellClean(r, colMap.ville1),
       rue2, cp2, ville2, has2: !!(rue2 && ville2),
-      deplacement: cell(r, 12),
-      deplacementSecours: cell(r, 15),
-      situation: cell(r, 14),
+      deplacement: cell(r, colMap.deplacement),
+      deplacementSecours: cell(r, colMap.deplacementSecours),
+      situation: cell(r, colMap.situation),
       places: Number.isFinite(placesN) && placesN > 0 ? placesN : undefined,
-      optIn: cell(r, 16)
+      optIn: cell(r, colMap.optIn)
     };
   }).filter(r => r.rue && r.ville);
 
   if (parsedRows.length === 0) {
-    alert("Aucune ligne exploitable : colonnes rue (F) et ville (H) introuvables ou vides.");
+    alert("Aucune ligne exploitable : colonnes rue et ville introuvables ou vides (structure du fichier non reconnue).");
     return;
   }
 
@@ -2550,7 +2635,7 @@ document.getElementById('csv-input').addEventListener('change', async function (
   const nOptOut = parsedRows.filter(r => isOptOut(r.optIn)).length;
   if (nOptOut > 0) {
     const exclude = await askYesNo(
-      `${nOptOut} personne(s) ont répondu ne pas vouloir de covoiturage (colonne Q, réponse commençant par "Non").\n\n` +
+      `${nOptOut} personne(s) ont répondu ne pas vouloir de covoiturage (réponse commençant par "Non" à la question sur le souhait de covoiturage).\n\n` +
       `Les exclure de la carte et de tous les calculs ?`
     );
     if (exclude) parsedRows = parsedRows.filter(r => !isOptOut(r.optIn));
@@ -2582,6 +2667,18 @@ document.getElementById('csv-input').addEventListener('change', async function (
   });
   const nBadPostal = parsedRows.filter(r => r.cp && !/^\d{5}$/.test(r.cp)).length;
   const dataWarnings = [];
+  if (usedFallbackColumns) {
+    const fieldLabels = {
+      nom: 'Nom', prenom: 'Prénom', groupe: 'Groupe',
+      rue1: 'Adresse (rue)', ville1: 'Ville', deplacement: 'Mode de déplacement'
+    };
+    const missingLabels = detection.missing.map(k => fieldLabels[k] || k).join(', ');
+    dataWarnings.push(
+      `⚠️ Colonnes non identifiées par leur en-tête (champs introuvables : ${missingLabels}) — ` +
+      `repli sur l'ordre de colonnes habituel (C à Q). Si le fichier a une structure différente ` +
+      `de l'export attendu, l'import peut être décalé et incorrect : vérifiez les données affichées avant de continuer.`
+    );
+  }
   if (nSanitized > 0) dataWarnings.push(`${nSanitized} champ(s) contenaient les caractères < ou > (retirés automatiquement).`);
   if (nDuplicates > 0) dataWarnings.push(`${nDuplicates} doublon(s) probable(s) (même nom et même rue) — une personne a peut-être répondu plusieurs fois.`);
   if (nBadPostal > 0) dataWarnings.push(`${nBadPostal} code(s) postal(aux) ne ressemble(nt) pas à 5 chiffres — le géocodage pourrait être imprécis sur ces lignes.`);
@@ -2978,6 +3075,7 @@ const PROJECT_HISTORY = [
   { theme: "Carte et fonds de carte", text: "Sixième fond de carte ajouté : \"Rues (Esri)\" (World_Street_Map), un style rue coloré alternatif à OpenStreetMap couleur, même famille Esri fiable, labels inclus nativement. Vérifié en direct que le service répond sans clé avant de l'intégrer." },
   { theme: "Interface et accessibilité", text: "Corrigé aussi un défaut d'alignement repéré sur le bouton \"Vue générale\" : il héritait d'un texte aligné à gauche (text-align: left) alors que tous les autres boutons du fichier sont centrés — corrigé pour rester cohérent avec le reste de l'interface." },
   { theme: "Groupes, destinations et proximité", text: "Deux changements sur \"Recréer les groupes par proximité\". (1) Le rapport final n'affiche plus un simple avertissement conditionnel (fourchette 28-31) : il liste maintenant, pour chaque groupe créé, le nombre de personnes et le nombre de conducteur·rices potentiel·les. (2) Nouvelle contrainte lors de la création des groupes : l'algorithme essaie de garantir au moins MIN_CAR_PER_GROUP (constante ajustable, valeur actuelle : 3) personnes en capacité de conduire par groupe — voiture individuelle ou covoiturage conducteur, en mode principal OU de secours — via une première passe d'affectation prioritaire (par proximité aussi) avant de compléter le reste normalement. Si la population totale ne compte pas assez de conducteur·rices potentiel·les pour que TOUS les groupes atteignent ce minimum, un avertissement chiffré apparaît dans la boîte de confirmation avant de lancer l'opération, et les groupes concernés sont marqués ⚠️ dans le rapport final — sans jamais laisser quiconque sans groupe ni déséquilibrer les tailles. Validé : sans contrainte la géographie prime seule (comportement inchangé) ; avec juste assez de conducteur·rices disponibles, le minimum est atteint dans TOUS les groupes ; en cas de pénurie, l'algorithme fait au mieux sans jamais planter ni oublier personne ; le message de confirmation prévient correctement en cas d'insuffisance chiffrée." },
+  { theme: "Données, import et géocodage", text: "Chantier de fiabilisation de l'import lancé (repéré comme point ouvert lors de la session précédente) : les colonnes du fichier importé sont maintenant identifiées par mot-clé dans la ligne d'en-tête (ex. \"nom\", \"prénom\", \"groupe\", \"rue\"/\"adresse\", \"code postal\", \"ville\", \"déplacement\", \"plan B\"/\"secours\", \"places\", \"abonnement\"/\"stabilité\", \"covoiturage\"+\"souhait\"), plutôt que par leur position fixe (C à Q) — un réordonnancement futur des questions du Google Form ne décale donc plus silencieusement l'import. Repli automatique sur les positions fixes historiques, avec avertissement explicite affiché à l'utilisateur, si l'en-tête ne permet pas d'identifier tous les champs indispensables (nom, prénom, groupe, adresse, mode de déplacement) — pour ne jamais dégrader silencieusement un import qui fonctionnait avant. Piège corrigé en cours de route : le mot-clé \"place\" est une sous-chaîne de \"déplacement\" (capturait à tort la colonne du mode de déplacement comme colonne \"places\") et \"adresse\" apparaît aussi dans \"Adresse e-mail\" (capturait à tort la colonne e-mail comme colonne rue) — les deux corrigés (mots entiers pour \"places\", exclusion de \"mail\" pour la colonne rue). Limite connue, assumée : les mots-clés ont été choisis sur des intitulés plausibles, pas sur l'en-tête réel du formulaire (non disponible pour écrire ce code) — à vérifier sur un vrai export avant de s'y fier pour une passation réelle ; en cas de désaccord de mots-clés, le repli avec avertissement protège d'un import silencieusement faux. Validé par 6 tests dédiés (en-tête actuel, en-tête réordonné, e-mail non confondu avec l'adresse, en-tête non reconnaissable déclenchant le repli, en-tête vide, accents/casse ignorés), ajoutés à tests_covoiturage.html — 27/27 tests passent." },
 ];
 
 function openHistoryModal() {

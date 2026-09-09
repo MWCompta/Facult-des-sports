@@ -70,6 +70,57 @@ function esc(s) {
 
 function isOptOut(val) { return !!val && val.trim().toLowerCase().startsWith('non'); }
 
+// Détection des colonnes d'import par mot-clé d'en-tête (plutôt que par position fixe),
+// dupliquée depuis carte_groupes_nancy.html — voir le commentaire là-bas pour le contexte
+// (chantier de résilience au réordonnancement du formulaire).
+function stripAccents(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+function normalizeHeader(s) {
+  return stripAccents(s).toLowerCase().replace(/[^a-z0-9? ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+const HEADER_FIELD_RULES = [
+  { key: 'adressePrincipale', test: h => h.includes('principal') && h.includes('adresse') },
+  { key: 'deplacementSecours', test: h => h.includes('secours') || h.includes('plan b') },
+  { key: 'optIn', test: h => h.includes('covoiturage') && /souhait|voulez|interess|participer/.test(h) },
+  { key: 'situation', test: h => h.includes('abonnement') || h.includes('stabilit') },
+  { key: 'places', test: h => /\bplaces?\b/.test(h) },
+  { key: 'deplacement', test: h => h.includes('deplacement') || h.includes('mode de transport') },
+  { key: 'prenom', test: h => /\bprenom\b/.test(h) },
+  { key: 'nom', test: h => /\bnom\b/.test(h) && !/\bprenom\b/.test(h) && !h.includes('groupe') },
+  { key: 'groupe', test: h => /\bgroupe\b/.test(h) },
+  { key: 'cp', test: h => h.includes('code postal') || /\bcp\b/.test(h) },
+  { key: 'ville', test: h => /\bville\b|\bcommune\b/.test(h) },
+  { key: 'rue', test: h => (h.includes('rue') || h.includes('adresse')) && !h.includes('mail') }
+];
+const HEADER_DUAL_KEYS = ['rue', 'cp', 'ville'];
+const HEADER_REQUIRED_FIELDS = ['nom', 'prenom', 'groupe', 'rue1', 'ville1', 'deplacement'];
+function detectColumnMapping(headerRow) {
+  const dual = { rue: [], cp: [], ville: [] };
+  const single = {};
+  (headerRow || []).forEach((raw, i) => {
+    const h = normalizeHeader(raw);
+    if (!h) return;
+    const rule = HEADER_FIELD_RULES.find(r => r.test(h));
+    if (!rule) return;
+    if (HEADER_DUAL_KEYS.includes(rule.key)) {
+      if (dual[rule.key].length < 2) dual[rule.key].push(i);
+    } else if (single[rule.key] === undefined) {
+      single[rule.key] = i;
+    }
+  });
+  const mapping = {
+    nom: single.nom, prenom: single.prenom, groupe: single.groupe,
+    adressePrincipale: single.adressePrincipale,
+    rue1: dual.rue[0], cp1: dual.cp[0], ville1: dual.ville[0],
+    rue2: dual.rue[1], cp2: dual.cp[1], ville2: dual.ville[1],
+    deplacement: single.deplacement, deplacementSecours: single.deplacementSecours,
+    places: single.places, situation: single.situation, optIn: single.optIn
+  };
+  const missing = HEADER_REQUIRED_FIELDS.filter(k => mapping[k] === undefined);
+  return { mapping, missing };
+}
+
 // Consolidation par économies (Clarke & Wright) — décide combien de personnes cochées
 // finissent réellement conductrices, forme isolée
 function runSavingsConsolidation(nDrivers, destIdx, capacities, T, D, MAX_DETOUR_SECONDS) {
@@ -215,6 +266,64 @@ test('isOptOut : détecte le texte complet réel du formulaire', () => {
 });
 test('isOptOut : ne détecte pas une réponse positive', () => {
   assert(isOptOut('Oui') === false);
+});
+
+test('detectColumnMapping : repère toutes les colonnes sur l\'en-tête actuel du formulaire', () => {
+  const header = [
+    "Horodateur", "Adresse e-mail", "Nom", "Prénom", "Groupe",
+    "Adresse (numéro et rue)", "Code postal", "Ville",
+    "Confirmez-vous que l'adresse ci-dessus est votre adresse principale ?",
+    "Adresse 2 (numéro et rue)", "Code postal 2", "Ville 2",
+    "Quel est votre mode de déplacement habituel pour venir à la fac ?",
+    "Combien de places avez-vous de disponibles dans votre véhicule ?",
+    "Votre abonnement de transport est-il stable dans le temps ?",
+    "En cas de problème, quel serait votre plan B / solution de secours ?",
+    "Souhaitez-vous participer au dispositif de covoiturage ?"
+  ];
+  const { mapping, missing } = detectColumnMapping(header);
+  assert(missing.length === 0, `champs manquants inattendus : ${missing.join(', ')}`);
+  assert(mapping.nom === 2 && mapping.prenom === 3 && mapping.groupe === 4, 'nom/prénom/groupe');
+  assert(mapping.rue1 === 5 && mapping.cp1 === 6 && mapping.ville1 === 7, 'adresse principale');
+  assert(mapping.adressePrincipale === 8, 'bascule adresse principale');
+  assert(mapping.rue2 === 9 && mapping.cp2 === 10 && mapping.ville2 === 11, 'adresse secondaire (2e occurrence)');
+  assert(mapping.deplacement === 12, 'mode de déplacement, pas confondu avec "places"');
+  assert(mapping.places === 13, 'places');
+  assert(mapping.situation === 14, 'stabilité abonnement');
+  assert(mapping.deplacementSecours === 15, 'plan B, distinct du mode principal');
+  assert(mapping.optIn === 16, 'souhait de covoiturage');
+});
+
+test('detectColumnMapping : retrouve les colonnes même après réordonnancement des questions', () => {
+  const header = [
+    "Quel est votre mode de déplacement habituel pour venir à la fac ?",
+    "Nom", "Prénom", "Groupe",
+    "Adresse (numéro et rue)", "Code postal", "Ville"
+  ];
+  const { mapping, missing } = detectColumnMapping(header);
+  assert(missing.length === 0, `champs manquants inattendus : ${missing.join(', ')}`);
+  assert(mapping.deplacement === 0, 'déplacement retrouvé en tête de fichier');
+  assert(mapping.nom === 1 && mapping.prenom === 2 && mapping.groupe === 3, 'nom/prénom/groupe après déplacement');
+  assert(mapping.rue1 === 4 && mapping.ville1 === 6, 'adresse retrouvée après déplacement');
+});
+
+test('detectColumnMapping : "Adresse e-mail" n\'est jamais pris pour la colonne rue', () => {
+  const header = ["Nom", "Prénom", "Groupe", "Adresse e-mail", "Rue", "Code postal", "Ville", "Mode de déplacement habituel"];
+  const { mapping } = detectColumnMapping(header);
+  assert(mapping.rue1 === 4, `attendu colonne 4 (Rue), obtenu ${mapping.rue1}`);
+});
+
+test('detectColumnMapping : en-tête non reconnaissable déclenche le repli (champs obligatoires manquants)', () => {
+  const { missing } = detectColumnMapping(["Colonne A", "Colonne B", "Colonne C"]);
+  assert(missing.length > 0, 'un en-tête sans mot-clé reconnu doit signaler des champs manquants');
+});
+
+test('detectColumnMapping : en-tête vide ne fait pas planter la détection', () => {
+  const { missing } = detectColumnMapping([]);
+  assert(missing.length === HEADER_REQUIRED_FIELDS.length);
+});
+
+test('normalizeHeader : ignore accents et casse', () => {
+  assert(normalizeHeader('Prénom') === normalizeHeader('PRENOM'));
 });
 
 test('algorithme : la capacité d\'un conducteur n\'est jamais dépassée', () => {
