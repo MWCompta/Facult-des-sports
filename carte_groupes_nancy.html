@@ -1,0 +1,3032 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Covoiturage — Nancy</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root {
+    --ink: #1f2430;
+    --ink-soft: #5b6472;
+    --line: #e2e5ea;
+    --panel-bg: #fbfbfa;
+    --accent-dark: #1f2430;
+    --focus: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+  }
+  #app { display: flex; height: 100vh; width: 100vw; }
+  #sidebar {
+    width: 320px; flex-shrink: 0; background: var(--panel-bg);
+    border-right: 1px solid var(--line); padding: 20px 18px; overflow-y: auto;
+  }
+  #map { flex: 1 1 auto; height: 100%; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .subtitle { font-size: 0.8rem; color: var(--ink-soft); margin: 0 0 18px; }
+  .weather-toggle {
+    display: flex; align-items: flex-start; gap: 6px; font-size: 0.74rem; color: var(--ink-soft);
+    line-height: 1.4; margin: 0 0 14px; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: #f8fafc; cursor: pointer;
+  }
+  .weather-toggle input { margin-top: 1px; flex-shrink: 0; }
+  .btn-general {
+    width: 100%; text-align: center; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid var(--line); background: #fff; font-size: 0.86rem; font-weight: 500;
+    color: var(--ink); cursor: pointer; margin-bottom: 16px;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .btn-general.active { background: var(--accent-dark); color: #fff; border-color: var(--accent-dark); }
+  .view-filter-row { display: flex; gap: 6px; margin: -10px 0 16px; }
+  .view-filter-row .btn-general { margin-bottom: 0; text-align: center; font-size: 0.76rem; padding: 7px 6px; }
+  .btn-general.secondary { background: #fff; }
+  .btn-general.secondary.active { background: var(--accent-dark); color: #fff; border-color: var(--accent-dark); }
+  .section-label { font-size: 0.72rem; color: var(--ink-soft); margin: 0 0 8px; }
+  .group-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 18px; }
+  .group-btn {
+    aspect-ratio: 1; border-radius: 7px; border: 2px solid transparent; cursor: pointer;
+    font-size: 0.72rem; font-weight: 600; color: #fff; display: flex; align-items: center;
+    justify-content: center; opacity: 0.55; text-shadow: 0 0 2px rgba(0,0,0,0.55);
+    transition: opacity 0.15s, transform 0.1s, border-color 0.15s;
+  }
+  .group-btn:hover { opacity: 0.85; }
+  .group-btn.active { opacity: 1; border-color: var(--ink); transform: scale(1.05); }
+  .info-box {
+    font-size: 0.8rem; color: var(--ink-soft); border-top: 1px solid var(--line);
+    padding-top: 12px; margin-top: 4px; line-height: 1.5;
+  }
+  .info-box strong { color: var(--ink); }
+  .hint { font-size: 0.72rem; color: var(--ink-soft); margin-top: 14px; line-height: 1.5; }
+  .upload-box { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; }
+  .upload-box label { font-size: 0.78rem; font-weight: 500; display: block; margin-bottom: 6px; cursor: pointer; }
+  .upload-box input[type=file] { font-size: 0.72rem; width: 100%; }
+  button:focus-visible, input:focus-visible, label:focus-within {
+    outline: 2px solid var(--focus); outline-offset: 2px;
+  }
+  .leaflet-tooltip { font-family: inherit; font-size: 0.78rem; }
+  .custom-div-icon { background: transparent !important; border: none !important; }
+  .capture-hide { display: none !important; }
+  .capture-hide-permanent { display: none; }
+  .retry-btn {
+    width: 100%; margin-top: 8px; padding: 7px 10px; border-radius: 8px;
+    border: 1px solid #fca5a5; background: #fef2f2; color: #b91c1c; font-size: 0.76rem;
+    font-weight: 500; cursor: pointer;
+  }
+  .retry-btn:hover { background: #fee2e2; }
+  .retry-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .retry-btn.secondary { background: #fff; border-color: var(--line); color: var(--ink); }
+  .retry-btn.secondary:hover { background: #f1f2f4; }
+  .regroup-box { margin-top: 10px; }
+  .dest-override-box {
+    margin: 0 0 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: #f8fafc;
+  }
+  .dest-override-box input[type="text"] {
+    width: 100%; box-sizing: border-box; padding: 6px 8px; margin: 0 0 6px;
+    border: 1px solid var(--line); border-radius: 6px; font-size: 0.78rem;
+  }
+  .dest-override-scope { display: flex; flex-direction: column; gap: 3px; margin: 0 0 8px; font-size: 0.74rem; color: var(--ink-soft); }
+  .dest-override-scope label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .dest-override-status {
+    font-size: 0.76rem; padding: 6px 8px; margin: 0 0 8px; border-radius: 6px;
+    background: #eef2ff; border: 1px solid #c7d2fe; color: #363f72;
+  }
+  .dest-override-status .retry-btn { margin-top: 6px; }
+  .modal-panel-wide { max-width: 720px; }
+  .failed-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+  .failed-table th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); color: var(--ink-soft); font-weight: 500; }
+  .failed-table td { padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  .modal-section-title { font-size: 0.85rem; font-weight: 600; margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .dup-group { margin: 0 0 14px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fafafa; }
+  .dup-group-title { margin: 0 0 8px; font-size: 0.8rem; }
+  .dup-group .retry-btn { width: auto; margin-top: 0; padding: 5px 10px; }
+  .dup-group table.failed-table { margin-bottom: 8px; }
+  .yesno-message { white-space: pre-line; margin: 0 0 16px; font-size: 0.85rem; line-height: 1.5; }
+  .yesno-buttons { display: flex; gap: 8px; }
+  .yesno-buttons .retry-btn { margin-top: 0; }
+  .history-btn {
+    position: fixed; bottom: 18px; right: 18px; z-index: 900; width: 44px; height: 44px;
+    border-radius: 50%; border: 1px solid var(--line); background: #fff; font-size: 1.1rem;
+    cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  }
+  .history-btn:hover { background: #f1f2f4; }
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(15,17,23,0.5); z-index: 950;
+    align-items: center; justify-content: center; padding: 20px;
+  }
+  .modal-overlay.visible { display: flex; }
+  .modal-panel {
+    background: #fff; border-radius: 12px; width: 100%; max-width: 560px; max-height: 82vh;
+    display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between; padding: 16px 20px;
+    border-bottom: 1px solid var(--line); flex-shrink: 0;
+  }
+  .modal-header h2 { font-size: 1rem; margin: 0; }
+  .modal-close { background: none; border: none; font-size: 1rem; cursor: pointer; color: var(--ink-soft); padding: 4px 8px; }
+  .modal-body { padding: 16px 20px; overflow-y: auto; font-size: 0.82rem; line-height: 1.6; color: var(--ink); }
+  .modal-body ol { margin: 0; padding-left: 20px; }
+  .modal-body li { margin-bottom: 10px; }
+  .history-theme { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+  .history-theme:last-child { margin-bottom: 0; }
+  .history-theme summary {
+    padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 0.85rem;
+    background: #f4f5f7; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .history-theme summary .history-count { font-weight: 400; color: var(--ink-soft); font-size: 0.76rem; white-space: nowrap; }
+  .history-theme[open] summary { border-bottom: 1px solid var(--line); }
+  .history-theme-body { padding: 10px 14px; }
+  .history-theme-body ol { margin: 0; padding-left: 20px; }
+  .history-theme-body li { margin-bottom: 8px; }
+  .history-theme-body li:last-child { margin-bottom: 0; }
+  #member-panel { display: none; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 14px; }
+  #member-panel.visible { display: block; }
+  .member-panel-title { font-size: 0.82rem; font-weight: 600; margin: 0 0 8px; }
+  #member-list { max-height: 230px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
+  .member-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 0.76rem; border-bottom: 1px solid var(--line); }
+  .member-row:last-child { border-bottom: none; }
+  .member-row.excluded { opacity: 0.5; }
+  .member-row.excluded .member-label { text-decoration: line-through; }
+  .member-label { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .member-name { font-weight: 600; color: var(--ink); }
+  .member-addr { color: var(--ink-soft); font-size: 0.68rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exclude-btn { flex-shrink: 0; width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--line); background: #fff; color: var(--ink-soft); font-size: 0.7rem; cursor: pointer; line-height: 1; }
+  .exclude-btn.active { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
+  .force-btn { flex-shrink: 0; width: 22px; height: 20px; border-radius: 5px; border: 1px solid var(--line); background: #fff; font-size: 0.6rem; cursor: pointer; }
+  .force-btn.active { background: #dbeafe; border-color: #93c5fd; }
+  .transport-icon-btn { flex-shrink: 0; font-size: 0.82rem; background: #fff; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; line-height: 1.5; }
+  .transport-icon-btn:hover { background: #f1f2f4; }
+  .trace-btn { width: 100%; padding: 9px 12px; border-radius: 8px; border: none; background: var(--accent-dark); color: #fff; font-size: 0.84rem; font-weight: 600; cursor: pointer; margin-bottom: 10px; }
+  .trace-btn:disabled { background: #c7cdd6; cursor: not-allowed; }
+  .member-panel-actions { display: flex; gap: 8px; margin-bottom: 10px; }
+  .member-panel-actions .trace-btn { margin-bottom: 0; flex: 1; }
+  .reset-btn { flex-shrink: 0; width: 36px; border-radius: 8px; border: 1px solid var(--line); background: #fff; font-size: 1rem; cursor: pointer; }
+  .reset-btn:hover { background: #f1f2f4; }
+  .capture-btn {
+    width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: #fff; color: var(--ink); font-size: 0.8rem; font-weight: 500; cursor: pointer;
+    margin-top: 14px; transition: background 0.15s;
+  }
+  .capture-btn:hover { background: #f1f2f4; }
+  .capture-btn:disabled { color: var(--ink-soft); cursor: not-allowed; }
+  .route-status { font-size: 0.76rem; color: var(--ink-soft); line-height: 1.5; margin: 0; }
+  .driver-line { display: flex; align-items: center; gap: 6px; font-size: 0.76rem; padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .driver-line .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .metric-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+  .metric-table th { text-align: right; font-weight: 500; color: var(--ink-soft); padding: 2px 4px; }
+  .metric-table th:first-child { text-align: left; }
+  .metric-table td { text-align: right; padding: 2px 4px; color: var(--ink); }
+  .metric-table td:first-child { text-align: left; color: var(--ink-soft); }
+  .group-metric-table { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 0.76rem; }
+  .group-metric-table td, .group-metric-table th { padding: 3px 4px; }
+  @media (max-width: 720px) {
+    #app { flex-direction: column; }
+    #sidebar { width: 100%; max-height: 46vh; border-right: none; border-bottom: 1px solid var(--line); }
+    #map { flex: 1 1 auto; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <h1>Covoiturage — groupes</h1>
+    <p class="subtitle" id="subtitle" role="status" aria-live="polite">54 adresses de démonstration, Nancy et Épinal.</p>
+    <label class="weather-toggle">
+      <input type="checkbox" id="bad-weather-toggle" />
+      ☔ Mode mauvais temps (bascule les personnes à pied vers leur Plan B)
+    </label>
+    <label class="weather-toggle">
+      <input type="checkbox" id="closest-address-toggle" />
+      📍 Utiliser l'adresse la plus proche de la faculté (pour qui en a indiqué deux)
+    </label>
+    <label class="weather-toggle">
+      <input type="checkbox" id="everyone-mode-toggle" />
+      👥 Prendre tout le monde en compte (bus, vélo, à pied… tout le monde à covoiturer)
+    </label>
+    <button class="btn-general active" id="btn-general" type="button">Vue générale</button>
+    <div class="view-filter-row">
+      <button class="btn-general secondary" id="btn-nancy" type="button">Étudiant Nancy</button>
+      <button class="btn-general secondary" id="btn-epinal" type="button">Étudiant Épinal</button>
+    </div>
+    <p class="section-label" id="groups-label">Groupes</p>
+    <div class="group-grid" id="group-grid"></div>
+    <div class="info-box" id="info-box"></div>
+
+    <div id="member-panel">
+      <p class="member-panel-title" id="member-panel-title"></p>
+      <div class="dest-override-box" id="dest-override-box">
+        <p class="section-label" style="margin:0 0 6px;">📍 Destination temporaire</p>
+        <div id="dest-override-status"></div>
+        <input type="text" id="dest-override-input" placeholder="Adresse de la destination temporaire…" />
+        <div class="dest-override-scope" id="dest-override-scope"></div>
+        <button class="retry-btn" id="dest-override-apply" type="button">Appliquer</button>
+      </div>
+      <div id="member-list"></div>
+      <div class="member-panel-actions">
+        <button class="trace-btn" id="trace-btn" type="button" disabled>Tracer l'itinéraire</button>
+        <button class="reset-btn" id="reset-group-btn" type="button" title="Décocher toutes les cases de ce groupe">↺</button>
+      </div>
+      <p class="route-status" id="route-status" role="status" aria-live="polite"></p>
+      <div id="route-results"></div>
+    </div>
+
+    <p class="hint" id="basemap-hint">Le fond de carte se change via l'icône en haut à droite de la carte.</p>
+    <button class="capture-btn" id="capture-btn" type="button">📄 Exporter (PDF)</button>
+    <button class="capture-btn" id="export-all-btn" type="button">📚 Exporter tous les groupes tracés</button>
+    <div class="upload-box">
+      <label for="csv-input">Charger vos propres données (CSV)</label>
+      <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" />
+      <p class="hint">Import direct de l'export du formulaire (xlsx ou csv), structure identique à votre modèle. Géocodage automatique des adresses.</p>
+      <button class="retry-btn capture-hide-permanent" id="retry-geocode-btn" type="button">Réessayer les adresses non géolocalisées</button>
+      <button class="retry-btn secondary capture-hide-permanent" id="view-failed-btn" type="button">Voir la liste</button>
+    </div>
+    <div class="upload-box regroup-box">
+      <p class="section-label" style="margin:0 0 6px;">Pour l'année prochaine</p>
+      <p class="hint" style="margin:0 0 8px;">Recrée entièrement les groupes à partir des adresses actuellement chargées, en les répartissant par proximité géographique (Nancy et Épinal restent séparés). Remplace tous les groupes existants.</p>
+      <button class="retry-btn secondary" id="regroup-btn" type="button">🗺️ Recréer les groupes par proximité</button>
+    </div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<button id="history-btn" class="history-btn" type="button" title="Historique des décisions du projet" aria-label="Historique des décisions du projet">📋</button>
+<div id="history-modal" class="modal-overlay">
+  <div class="modal-panel modal-panel-wide" role="dialog" aria-labelledby="history-title">
+    <div class="modal-header">
+      <h2 id="history-title">Historique des décisions</h2>
+      <button id="history-close" class="modal-close" type="button" aria-label="Fermer">✕</button>
+    </div>
+    <div class="modal-body" id="history-body"></div>
+  </div>
+</div>
+
+<div id="failed-modal" class="modal-overlay">
+  <div class="modal-panel modal-panel-wide" role="dialog" aria-labelledby="failed-title">
+    <div class="modal-header">
+      <h2 id="failed-title">Adresses à vérifier et doublons</h2>
+      <button id="failed-close" class="modal-close" type="button" aria-label="Fermer">✕</button>
+    </div>
+    <div class="modal-body" id="failed-body"></div>
+  </div>
+</div>
+
+<div id="yesno-modal" class="modal-overlay">
+  <div class="modal-panel" role="alertdialog" aria-labelledby="yesno-title" aria-describedby="yesno-message">
+    <div class="modal-header">
+      <h2 id="yesno-title">Confirmation</h2>
+    </div>
+    <div class="modal-body">
+      <p id="yesno-message" class="yesno-message"></p>
+      <div class="yesno-buttons">
+        <button id="yesno-yes" class="retry-btn" type="button">Oui</button>
+        <button id="yesno-no" class="retry-btn secondary" type="button">Non</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+<script>
+// ------------------------------------------------------------------
+// DONNÉES DE DÉMONSTRATION
+// À remplacer par les données réelles, ou à charger via le panneau CSV
+// (mêmes champs : id, groupe, nom, adresse, ville, lat, lon, [places])
+// ------------------------------------------------------------------
+let data = [
+  {id:1, groupe:11, nom:"Léa", adresse:"82 Place du Marché", ville:"Laxou", lat:48.684214, lon:6.154541},
+  {id:2, groupe:2, nom:"Hugo", adresse:"130 Rue de la Fontaine", ville:"Tomblaine", lat:48.686242, lon:6.22141},
+  {id:3, groupe:6, nom:"Emma", adresse:"46 Boulevard Jean Jaurès", ville:"Seichamps", lat:48.720059, lon:6.263105},
+  {id:4, groupe:5, nom:"Louis", adresse:"103 Rue Pasteur", ville:"Nancy", lat:48.683516, lon:6.186613},
+  {id:5, groupe:6, nom:"Chloé", adresse:"41 Rue du Château", ville:"Nancy", lat:48.695265, lon:6.194258},
+  {id:6, groupe:5, nom:"Nathan", adresse:"4 Rue de la Paix", ville:"Nancy", lat:48.688985, lon:6.165323},
+  {id:7, groupe:5, nom:"Manon", adresse:"32 Rue Victor Hugo", ville:"Tomblaine", lat:48.683356, lon:6.222775},
+  {id:8, groupe:5, nom:"Enzo", adresse:"112 Rue des Acacias", ville:"Villers-lès-Nancy", lat:48.676636, lon:6.146175},
+  {id:9, groupe:14, nom:"Camille", adresse:"97 Rue des Vignes", ville:"Nancy", lat:48.703328, lon:6.171742},
+  {id:10, groupe:15, nom:"Lucas", adresse:"114 Rue des Vignes", ville:"Nancy", lat:48.693488, lon:6.180658},
+  {id:11, groupe:3, nom:"Sarah", adresse:"51 Rue Stanislas", ville:"Essey-lès-Nancy", lat:48.711072, lon:6.237894},
+  {id:12, groupe:1, nom:"Adam", adresse:"47 Impasse du Verger", ville:"Maxéville", lat:48.710202, lon:6.16903},
+  {id:13, groupe:16, nom:"Inès", adresse:"136 Rue Gambetta", ville:"Essey-lès-Nancy", lat:48.70909, lon:6.229439},
+  {id:14, groupe:3, nom:"Jules", adresse:"67 Rue du Moulin", ville:"Nancy", lat:48.692893, lon:6.174136},
+  {id:15, groupe:10, nom:"Alice", adresse:"27 Rue Jeanne d'Arc", ville:"Tomblaine", lat:48.683802, lon:6.227324},
+  {id:16, groupe:9, nom:"Rayan", adresse:"34 Rue du Général de Gaulle", ville:"Maxéville", lat:48.7126, lon:6.172296},
+  {id:17, groupe:16, nom:"Zoé", adresse:"93 Place du Marché", ville:"Nancy", lat:48.695734, lon:6.202979},
+  {id:18, groupe:14, nom:"Ethan", adresse:"40 Rue des Vignes", ville:"Vandœuvre-lès-Nancy", lat:48.661811, lon:6.162987},
+  {id:19, groupe:10, nom:"Jade", adresse:"88 Rue de la Paix", ville:"Nancy", lat:48.703796, lon:6.19087},
+  {id:20, groupe:10, nom:"Noah", adresse:"108 Rue Raugraff", ville:"Villers-lès-Nancy", lat:48.668728, lon:6.149381},
+  {id:21, groupe:14, nom:"Lina", adresse:"90 Rue de la Fontaine", ville:"Jarville-la-Malgrange", lat:48.674745, lon:6.195199},
+  {id:22, groupe:16, nom:"Gabriel", adresse:"107 Rue Raugraff", ville:"Nancy", lat:48.693096, lon:6.189839},
+  {id:23, groupe:3, nom:"Anna", adresse:"15 Chemin des Prés", ville:"Nancy", lat:48.694967, lon:6.164243},
+  {id:24, groupe:5, nom:"Liam", adresse:"40 Rue Gambetta", ville:"Essey-lès-Nancy", lat:48.70555, lon:6.23148},
+  {id:25, groupe:11, nom:"Louise", adresse:"143 Cours Léopold", ville:"Saint-Max", lat:48.708386, lon:6.204765},
+  {id:26, groupe:2, nom:"Nolan", adresse:"15 Rue du Sergent Blandan", ville:"Nancy", lat:48.693829, lon:6.184005},
+  {id:27, groupe:7, nom:"Rose", adresse:"60 Rue des Écoles", ville:"Nancy", lat:48.701957, lon:6.181014},
+  {id:28, groupe:15, nom:"Sacha", adresse:"87 Rue de la Fontaine", ville:"Nancy", lat:48.689158, lon:6.198576},
+  {id:29, groupe:1, nom:"Julia", adresse:"51 Rue du Moulin", ville:"Saint-Max", lat:48.702233, lon:6.21149},
+  {id:30, groupe:9, nom:"Timéo", adresse:"83 Cours Léopold", ville:"Saint-Max", lat:48.704283, lon:6.211387},
+  {id:31, groupe:1, nom:"Léna", adresse:"90 Rue des Érables", ville:"Saint-Max", lat:48.708828, lon:6.2036},
+  {id:32, groupe:14, nom:"Mohamed", adresse:"125 Avenue du Général Leclerc", ville:"Saint-Max", lat:48.706192, lon:6.202472},
+  {id:33, groupe:1, nom:"Eva", adresse:"53 Boulevard Jean Jaurès", ville:"Malzéville", lat:48.707856, lon:6.178837},
+  {id:34, groupe:4, nom:"Raphaël", adresse:"52 Rue Raugraff", ville:"Laxou", lat:48.678382, lon:6.147542},
+  {id:35, groupe:2, nom:"Mila", adresse:"28 Rue de la Fontaine", ville:"Malzéville", lat:48.703646, lon:6.186956},
+  {id:36, groupe:13, nom:"Arthur", adresse:"20 Impasse des Tilleuls", ville:"Jarville-la-Malgrange", lat:48.673927, lon:6.202886},
+  {id:37, groupe:11, nom:"Nora", adresse:"132 Rue des Trois Maisons", ville:"Nancy", lat:48.690223, lon:6.17116},
+  {id:38, groupe:2, nom:"Maël", adresse:"66 Rue de Metz", ville:"Jarville-la-Malgrange", lat:48.677255, lon:6.196409},
+  {id:39, groupe:11, nom:"Agathe", adresse:"9 Rue Saint-Georges", ville:"Vandœuvre-lès-Nancy", lat:48.668837, lon:6.175293},
+  {id:40, groupe:11, nom:"Théo", adresse:"80 Rue Jeanne d'Arc", ville:"Jarville-la-Malgrange", lat:48.674424, lon:6.208134},
+  {id:41, groupe:1, nom:"Lucie", adresse:"93 Rue de l'Église", ville:"Nancy", lat:48.688222, lon:6.183828},
+  {id:42, groupe:8, nom:"Aaron", adresse:"104 Rue de Metz", ville:"Nancy", lat:48.689227, lon:6.164619},
+  {id:43, groupe:3, nom:"Juliette", adresse:"104 Cours Léopold", ville:"Vandœuvre-lès-Nancy", lat:48.656774, lon:6.168807},
+  {id:44, groupe:2, nom:"Yanis", adresse:"55 Avenue du Général Leclerc", ville:"Essey-lès-Nancy", lat:48.707769, lon:6.23444},
+  {id:45, groupe:15, nom:"Margaux", adresse:"26 Rue de la Paix", ville:"Nancy", lat:48.69533, lon:6.196414},
+  {id:46, groupe:3, nom:"Baptiste", adresse:"69 Rue des Écoles", ville:"Saint-Max", lat:48.703823, lon:6.213881},
+  {id:47, groupe:4, nom:"Céleste", adresse:"12 Rue Jeanne d'Arc", ville:"Nancy", lat:48.705867, lon:6.178586},
+  {id:48, groupe:2, nom:"Victor", adresse:"83 Rue du Moulin", ville:"Nancy", lat:48.680751, lon:6.171536},
+  {id:49, groupe:6, nom:"Romane", adresse:"8 Boulevard Jean Jaurès", ville:"Nancy", lat:48.692698, lon:6.203568},
+  {id:50, groupe:10, nom:"Antoine", adresse:"11 Rue de l'Église", ville:"Nancy", lat:48.691637, lon:6.204062},
+  {id:51, groupe:17, nom:"Baptiste", adresse:"18 Rue de la République", ville:"Épinal", lat:48.173512, lon:6.451097},
+  {id:52, groupe:18, nom:"Céleste", adresse:"9 Rue Jean Jaurès", ville:"Golbey", lat:48.198924, lon:6.441883},
+  {id:53, groupe:19, nom:"Victor", adresse:"142 Rue du Général de Gaulle", ville:"Chantraine", lat:48.170538, lon:6.435716},
+  {id:54, groupe:20, nom:"Romane", adresse:"33 Rue Victor Hugo", ville:"Épinal", lat:48.175891, lon:6.453204}
+];
+
+// Destination unique de toutes les routes de covoiturage
+const DESTINATION_NANCY = { lat: 48.6671246, lon: 6.1565395 };
+const DESTINATION_NANCY_LABEL = "Faculté des sports — 30 Rue du Jardin-Botanique, Villers-lès-Nancy";
+const DESTINATION_EPINAL = { lat: 48.1843027, lon: 6.4548672 };
+const DESTINATION_EPINAL_LABEL = "Faculté des sports d'Épinal — 1 Rue Charles Perrault, 88000 Épinal";
+const EPINAL_GROUPS = ['17', '18', '19', '20']; // ces groupes arrivent à Épinal, tous les autres à Nancy
+// Détection robuste : le nom du groupe peut être exactement "17", mais aussi "17 (Épinal)"
+// ou toute variante contenant le nom de la ville — on ne se fie pas qu'à une correspondance
+// exacte du numéro seul, qui échoue dès que le libellé contient autre chose.
+function isEpinalGroup(g) {
+  const s = String(g).toLowerCase();
+  if (s.includes('épinal') || s.includes('epinal')) return true;
+  const leadingNum = s.match(/^\d+/);
+  return leadingNum ? EPINAL_GROUPS.includes(leadingNum[0]) : false;
+}
+function basinOf(g) { return isEpinalGroup(g) ? 'epinal' : 'nancy'; }
+
+// Destination temporaire : remplace la faculté habituelle pour un groupe précis, ou pour
+// tout un bassin (nancéien ou spinalien) à la fois. Priorité : un réglage propre au groupe
+// prime sur un réglage de bassin, qui prime sur la destination normale. Pensée comme
+// momentanée — un bouton permet de revenir à la destination habituelle à tout moment.
+let groupDestinationOverrides = new Map(); // groupe (String) -> {lat, lon, label}
+let basinDestinationOverrides = { nancy: null, epinal: null }; // {lat, lon, label} | null
+
+// Renvoie le réglage actif pour un groupe donné, et son origine ('group'/'basin'/null) —
+// utile pour l'affichage ("cette destination vient d'où ?").
+function activeOverrideForGroup(g) {
+  const key = String(g);
+  if (groupDestinationOverrides.has(key)) return { override: groupDestinationOverrides.get(key), scope: 'group' };
+  const basin = basinOf(g);
+  if (basinDestinationOverrides[basin]) return { override: basinDestinationOverrides[basin], scope: 'basin' };
+  return { override: null, scope: null };
+}
+
+function destinationForGroup(g) {
+  const { override } = activeOverrideForGroup(g);
+  if (override) return { lat: override.lat, lon: override.lon };
+  return isEpinalGroup(g) ? DESTINATION_EPINAL : DESTINATION_NANCY;
+}
+function destinationLabelForGroup(g) {
+  const { override } = activeOverrideForGroup(g);
+  if (override) return override.label;
+  return isEpinalGroup(g) ? "Épinal" : "Nancy";
+}
+
+// Géocodage (Géoplateforme IGN — remplace l'ancienne API Adresse BAN, décommissionnée
+// fin janvier 2026). Endpoint public, sans clé, limité à 50 req/s/IP.
+const GEOCODE_SCORE_THRESHOLD = 0.5; // en dessous : adresse à vérifier manuellement
+const GEOCODE_CONCURRENCY = 8;       // requêtes en parallèle
+const GEOCODE_MAX_PER_SECOND = 8;    // marge large sous la limite documentée (~50/s) du service
+const GEOCODE_MAX_RETRIES = 2;       // nouvelles tentatives avant d'abandonner une adresse
+
+// Icônes par mode de déplacement — intitulés exacts du formulaire réel (vérifiés sur
+// un export de test contenant de vraies réponses).
+// Couleur de fond par mode dans les exports — les trois variantes "en voiture" partagent
+// la même teinte pour que conducteur·rice et passager·ères ressortent comme un ensemble.
+const MODE_COLORS = {
+  "Voiture individuelle (seul(e))": [219, 234, 254],
+  "Covoiturage en tant que Conducteur / Conductrice": [219, 234, 254],
+  "Covoiturage en tant que Passager / Passagère": [219, 234, 254],
+  "Moto / Scooter / Deux-roues motorisé": [254, 243, 199],
+  "Bus/Tram": [220, 252, 231],
+  "Train": [250, 232, 255],
+  "Vélo électrique / Trottinette électrique": [255, 228, 230],
+  "À pied": [241, 245, 249]
+};
+function modeColorCss(mode) {
+  const c = MODE_COLORS[mode];
+  return c ? `rgb(${c[0]},${c[1]},${c[2]})` : '#fff';
+}
+
+const TRANSPORT_ICONS = {
+  "Voiture individuelle (seul(e))": "🚗",
+  "Covoiturage en tant que Conducteur / Conductrice": "🚗⭐",
+  "Covoiturage en tant que Passager / Passagère": "🧍🚗",
+  "Bus/Tram": "🚌",
+  "Train": "🚆",
+  "Moto / Scooter / Deux-roues motorisé": "🏍️",
+  "Vélo mécanique / Roller / Trottinette": "🚲",
+  "Vélo électrique / Trottinette électrique": "🛴",
+  "À pied": "🚶"
+};
+function transportIcon(val) {
+  return TRANSPORT_ICONS[val] || '❔';
+}
+// Mode mauvais temps : bascule automatiquement les personnes normalement à pied vers leur
+// Plan B (si utilisable), sans toucher aux autres modes ni aux bascules manuelles existantes.
+let badWeatherMode = false;
+function hasUsableBackup(m) {
+  return !!m.deplacementSecours && m.deplacementSecours !== 'Pas de plan B';
+}
+function isBackupActive(m) {
+  const st = memberState.get(m.id);
+  if (st && st.useBackup) return true;
+  if (badWeatherMode && m.deplacement === 'À pied' && hasUsableBackup(m)) return true;
+  return false;
+}
+function activeTransportMode(m) {
+  return isBackupActive(m) ? m.deplacementSecours : m.deplacement;
+}
+// Signale un usage de bus/train non stabilisé (pas d'abonnement) : le trajet de cette
+// personne pourrait ne pas se répéter à l'identique dans le temps.
+const UNSTABLE_SITUATIONS = ['Usage temporaire', 'Usage unique exceptionnel'];
+function isUnstableTransit(m) {
+  const mode = activeTransportMode(m);
+  return (mode === 'Train' || mode === 'Bus/Tram') && UNSTABLE_SITUATIONS.includes(m.situation);
+}
+// Éligible au ramassage : conduit déjà seul(e), ou se fait déjà covoiturer par un tiers
+// (donc n'a pas de véhicule propre) — ces deux profils ont besoin d'une place dans une voiture.
+function isPickupEligible(mode) {
+  return mode === "Voiture individuelle (seul(e))"
+      || mode === "Covoiturage en tant que Conducteur / Conductrice"
+      || mode === "Covoiturage en tant que Passager / Passagère";
+}
+
+// Personnes affichées avec l'icône voiture ET qui ont réellement un véhicule à elles (donc
+// de véritables conductrices/conducteurs potentiel·les) — contrairement à "Covoiturage en
+// tant que Passager / Passagère", qui affiche aussi l'icône voiture mais correspond à une
+// personne qui n'a justement PAS de véhicule propre à proposer.
+function isCarDriverMode(mode) {
+  return mode === "Voiture individuelle (seul(e))"
+      || mode === "Covoiturage en tant que Conducteur / Conductrice";
+}
+
+// A un véhicule à disposition, que ce soit son mode de déplacement principal OU de secours
+// (utilisé pour garantir un minimum de conducteur·rices potentiel·les par groupe).
+function hasCarCapability(m) {
+  return isCarDriverMode(m.deplacement) || isCarDriverMode(m.deplacementSecours);
+}
+
+// Profils par mode — hypothèses ajustables (gCO2/km, €/km, réseau de routage à utiliser).
+// Sources : voiture/moto — moyenne d'études comparatives comportement réel (De Bortoli &
+// Christoforou 2020, Hollingsworth et al. 2019) plutôt que l'homologation WLTP (qui sous-
+// estime l'usage réel) ; coût moto/scooter — barème kilométrique fiscal 2026 deux-roues
+// (cyclomoteur ≤50cm³, 1ère tranche) ; bus/train — moyenne pondérée par occupation typique
+// (ADEME/SNCF, plusieurs sources) ; vélo/trottinette électrique — cycle de vie hors flotte
+// partagée (usage personnel, sans logistique de redistribution).
+// kind: 'driving' (roule sur route — utilisé aussi comme approximation de distance pour
+// moto/bus/train, faute de données transport en commun) ; 'cycling' / 'foot' : profils
+// réels OSRM séparés. speedKmh, quand présent, remplace la durée renvoyée par OSRM (ex :
+// distance routière mais vitesse de bus, pas de voiture). Repli sur le profil voiture si
+// un intitulé imprévu apparaît (nouvelle réponse ajoutée au formulaire, etc.).
+const TRANSPORT_PROFILES = {
+  "Voiture individuelle (seul(e))": { emission: 170, cost: 0.636, kind: 'driving' },
+  "Covoiturage en tant que Conducteur / Conductrice": { emission: 170, cost: 0.636, kind: 'driving' },
+  // Référence "seul" d'un·e passager·ère habituel·le : équivalent voiture individuelle
+  // (c'est la solution de repli la plus réaliste si le covoiturage organisé n'existait pas).
+  "Covoiturage en tant que Passager / Passagère": { emission: 170, cost: 0.636, kind: 'driving' },
+  "Moto / Scooter / Deux-roues motorisé": { emission: 95, cost: 0.35, kind: 'driving' },
+  "Bus/Tram": { emission: 90, cost: 0, kind: 'driving', speedKmh: 20 },
+  "Train": { emission: 25, cost: 0, kind: 'driving', speedKmh: 40 },
+  "Vélo mécanique / Roller / Trottinette": { emission: 0, cost: 0, kind: 'cycling' },
+  "Vélo électrique / Trottinette électrique": { emission: 20, cost: 0, kind: 'cycling' },
+  "À pied": { emission: 0, cost: 0, kind: 'foot' }
+};
+function profileFor(mode) {
+  return TRANSPORT_PROFILES[mode] || TRANSPORT_PROFILES["Voiture individuelle (seul(e))"];
+}
+
+// Hypothèses ajustables — à modifier selon vos références. EMISSION_G_PER_KM/COST_PER_KM
+// reprennent le profil voiture ci-dessus (utilisés pour le trajet réel du conducteur).
+const EMISSION_G_PER_KM = 170;      // g CO2/km — voir sources ci-dessus
+const COST_PER_KM = 0.636;          // €/km — barème kilométrique fiscal 2026, véhicule 5 CV, ≤5000 km/an
+const MAX_DETOUR_SECONDS = 15 * 60; // contrainte : détour maximum par ramassage (aller/retour), en temps
+const FALLBACK_SPEED_KMH = 35;      // vitesse estimée si le service de routage est indisponible
+const DEFAULT_CAPACITY = 4;         // places par conducteur si aucune colonne "places" n'est fournie
+// Utilisé uniquement par "Recréer les groupes par proximité" : nombre minimum de personnes
+// en capacité de conduire (voiture individuelle ou covoiturage conducteur, mode principal ou
+// de secours) que l'algorithme essaie de garantir dans chaque groupe nouvellement créé.
+const MIN_CAR_PER_GROUP = 3;
+
+// ------------------------------------------------------------------
+// CARTE ET FONDS DISPONIBLES (sans clé API)
+// ------------------------------------------------------------------
+// renderer: L.canvas() — le rendu vectoriel par défaut de Leaflet est du SVG, que
+// html2canvas capture mal (positions décalées ou absentes) dans les panneaux à
+// transformation CSS de Leaflet. Le canvas est correctement capturé.
+const map = L.map('map', { zoomControl: true, renderer: L.canvas() });
+
+const baseMaps = {
+  "OpenStreetMap (couleur)": L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+    maxZoom: 20, subdomains: 'abc', crossOrigin: true,
+    attribution: '&copy; OpenStreetMap contributors — rendu OSM France'
+  }),
+  // Remplace l'ancien "Relief" (tile.openmaps.fr, service associatif avec filigrane intégré
+  // dans les tuiles) par un fond topographique Esri — même famille fiable et sans clé que
+  // "Satellite", avec villes/routes/relief déjà inclus nativement.
+  "Relief": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, crossOrigin: true,
+    attribution: 'Tiles &copy; Esri — Esri, HERE, Garmin, FAO, NOAA, USGS, OpenStreetMap contributors'
+  }),
+  // "Clair", "Sombre" et "Satellite" sont des fonds Esri volontairement dépourvus de labels
+  // (pensés comme fonds neutres pour poser SES PROPRES données dessus). On superpose donc le
+  // calque "Reference" compagnon de chacun (routes, villes, frontières) pour rester lisible.
+  "Clair (épuré)": L.layerGroup([
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18, maxNativeZoom: 15, crossOrigin: true,
+      attribution: 'Tiles &copy; Esri — Esri, HERE, Garmin, OpenStreetMap contributors'
+    }),
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18, maxNativeZoom: 15, crossOrigin: true
+    })
+  ]),
+  "Sombre": L.layerGroup([
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18, maxNativeZoom: 15, crossOrigin: true,
+      attribution: 'Tiles &copy; Esri — Esri, HERE, Garmin, OpenStreetMap contributors'
+    }),
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18, maxNativeZoom: 15, crossOrigin: true
+    })
+  ]),
+  "Satellite": L.layerGroup([
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19, crossOrigin: true,
+      attribution: 'Tiles &copy; Esri'
+    }),
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19, crossOrigin: true
+    })
+  ]),
+  // Style rue coloré alternatif à OSM couleur — même famille Esri fiable, labels inclus nativement.
+  "Rues (Esri)": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, crossOrigin: true,
+    attribution: 'Tiles &copy; Esri — Esri, HERE, Garmin, OpenStreetMap contributors'
+  })
+};
+
+baseMaps["OpenStreetMap (couleur)"].addTo(map);
+L.control.layers(baseMaps, null, { position: 'topright', collapsed: true }).addTo(map);
+
+// Tous les fonds de carte sont maintenant de vraies images distinctes (aucun n'est un
+// filtre CSS appliqué sur les mêmes tuiles) : une capture d'écran classique suffit donc
+// pour tous, sans recomposition ni filtre à reproduire manuellement.
+async function captureMapCanvas() {
+  const zoomEl = map.zoomControl && map.zoomControl.getContainer();
+  if (zoomEl) zoomEl.classList.add('capture-hide');
+  try {
+    return await html2canvas(document.getElementById('map'), {
+      useCORS: true, backgroundColor: '#ffffff', scale: 2
+    });
+  } finally {
+    if (zoomEl) zoomEl.classList.remove('capture-hide');
+  }
+}
+
+let markersLayer = L.layerGroup().addTo(map);
+let routeLayerGroup = L.layerGroup().addTo(map);
+let selectedGroup = null; // null = vue générale
+let viewFilter = 'all';   // 'all' | 'nancy' | 'epinal' — filtre appliqué à la vue générale uniquement
+function overviewData() {
+  if (viewFilter === 'nancy') return data.filter(d => !isEpinalGroup(d.groupe));
+  if (viewFilter === 'epinal') return data.filter(d => isEpinalGroup(d.groupe));
+  return data;
+}
+let groupList = [];
+// id -> {driver, excluded, useBackup, forceInclude} — GLOBAL, pour toutes les personnes de
+// tous les groupes à la fois (pas seulement le groupe actuellement affiché). Une case cochée
+// pour quelqu'un reste cochée quel que soit le groupe consulté ensuite.
+let memberState = new Map();
+let routeResult = null;        // {colorByDriver, colorByPassenger} après calcul
+let unassignedIds = new Set(); // ids des passagers non intégrés à un trajet
+let lastTraceData = null;      // détail par personne du dernier calcul, pour l'export
+// groupe -> dernier calcul réussi pour ce groupe (géométries incluses), pour l'export
+// groupé. Reflète le dernier "Tracer l'itinéraire" réussi de ce groupe — retracez un
+// groupe après une modification de ses cases avant un export groupé.
+let savedTraceData = new Map();
+let failedImportRows = []; // lignes analysées mais non géolocalisées, pour un nouvel essai ciblé
+let duplicateGroups = []; // groupes de doublons probables (même nom + même adresse) dans data
+
+function computeGroupList() {
+  groupList = [...new Set(data.map(d => d.groupe))].sort((a, b) => {
+    const na = Number(a), nb = Number(b);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function groupColor(groupe) {
+  const idx = groupList.findIndex(x => String(x) === String(groupe));
+  const n = groupList.length || 1;
+  const hue = Math.round((360 / n) * (idx < 0 ? 0 : idx)) % 360;
+  return `hsl(${hue}, 70%, 42%)`;
+}
+
+function iconForColor(emoji, color, size) {
+  return L.divIcon({
+    className: 'custom-div-icon',
+    html: `<div style="background:${color};width:${size}px;height:${size}px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);font-size:${Math.round(size*0.55)}px;line-height:1;">${emoji}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
+  });
+}
+
+// Marqueur de destination, toujours visible
+// Marqueurs de destination, toujours visibles
+L.marker([DESTINATION_NANCY.lat, DESTINATION_NANCY.lon], { icon: iconForColor('🏁', '#1f2430', 30) })
+  .bindTooltip(DESTINATION_NANCY_LABEL, { sticky: true, direction: 'top' })
+  .addTo(map);
+L.marker([DESTINATION_EPINAL.lat, DESTINATION_EPINAL.lon], { icon: iconForColor('🏁', '#1f2430', 30) })
+  .bindTooltip(DESTINATION_EPINAL_LABEL, { sticky: true, direction: 'top' })
+  .addTo(map);
+
+function renderMarkers() {
+  markersLayer.clearLayers();
+  const inGroup = selectedGroup !== null;
+
+  if (!inGroup) {
+    overviewData().forEach(d => {
+      const lowConf = typeof d.geocodeScore === 'number' && d.geocodeScore < GEOCODE_SCORE_THRESHOLD;
+      L.circleMarker([d.lat, d.lon], {
+        radius: 6, color: lowConf ? '#f59e0b' : '#fff', weight: lowConf ? 2.5 : 1.5,
+        fillColor: groupColor(d.groupe), fillOpacity: 0.88
+      })
+        .bindTooltip(`${d.nom} — ${d.adresse}, ${d.ville}<br>Groupe ${d.groupe}${lowConf ? '<br><em>Confiance de géocodage faible</em>' : ''}`, { sticky: true, direction: 'top' })
+        .addTo(markersLayer);
+    });
+    return;
+  }
+
+  data.filter(d => String(d.groupe) !== String(selectedGroup)).forEach(d => {
+    L.circleMarker([d.lat, d.lon], { radius: 3, color: 'transparent', weight: 0, fillColor: '#c7cdd6', fillOpacity: 0.45 })
+      .addTo(markersLayer);
+  });
+
+  data.filter(d => String(d.groupe) === String(selectedGroup)).forEach(d => {
+    const st = memberState.get(d.id) || { driver: false, excluded: false, useBackup: false, forceInclude: false };
+
+    if (st.excluded) {
+      L.circleMarker([d.lat, d.lon], { radius: 4, color: '#fff', weight: 1, fillColor: '#9aa3af', fillOpacity: 0.6 })
+        .bindTooltip(`${d.nom} — exclu du covoiturage`, { sticky: true, direction: 'top' })
+        .addTo(markersLayer);
+      return;
+    }
+    if (st.driver) {
+      const color = (routeResult && routeResult.colorByDriver.get(d.id)) || '#1f2430';
+      L.marker([d.lat, d.lon], { icon: iconForColor('🚗', color, 26) })
+        .bindTooltip(`${d.nom} — conducteur (${d.adresse}, ${d.ville})`, { sticky: true, direction: 'top' })
+        .addTo(markersLayer);
+      return;
+    }
+    if (routeResult && unassignedIds.has(d.id)) {
+      L.circleMarker([d.lat, d.lon], { radius: 6, color: '#b45309', weight: 2, fillColor: '#fbbf24', fillOpacity: 0.9 })
+        .bindTooltip(`${d.nom} — non intégré à un trajet (détour &gt; 15 min ou capacité atteinte)`, { sticky: true, direction: 'top' })
+        .addTo(markersLayer);
+      return;
+    }
+    const fill = (routeResult && routeResult.colorByPassenger.get(d.id)) || groupColor(d.groupe);
+    L.circleMarker([d.lat, d.lon], { radius: 7, color: '#fff', weight: 1.5, fillColor: fill, fillOpacity: 0.92 })
+      .bindTooltip(`${d.nom} — ${d.adresse}, ${d.ville}`, { sticky: true, direction: 'top' })
+      .addTo(markersLayer);
+  });
+}
+
+function renderGroupButtons() {
+  const grid = document.getElementById('group-grid');
+  grid.innerHTML = '';
+  groupList.forEach(g => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'group-btn';
+    btn.style.background = groupColor(g);
+    btn.textContent = g;
+    btn.title = `Groupe ${g}`;
+    btn.setAttribute('aria-label', `Groupe ${g}`);
+    btn.dataset.group = g;
+    btn.addEventListener('click', () => {
+      selectGroup(String(selectedGroup) === String(g) ? null : g);
+    });
+    grid.appendChild(btn);
+  });
+}
+
+// Initialise l'état de TOUTE la population chargée (tous groupes confondus) dès que les
+// données sont prêtes, plutôt que d'attendre qu'on ouvre chaque groupe un par un — les
+// voitures individuelles et les conducteur·rices habituel·les sont cochées d'emblée pour
+// tout le monde. N'écrase jamais un état déjà présent (personne déjà ajustée manuellement,
+// ou déjà chargée lors d'un essai précédent).
+function initializeAllMemberStates() {
+  data.forEach(m => {
+    if (!memberState.has(m.id)) {
+      memberState.set(m.id, {
+        driver: isCarDriverMode(m.deplacement),
+        excluded: false, useBackup: false, forceInclude: false
+      });
+    }
+  });
+}
+
+function selectGroup(g) {
+  selectedGroup = g;
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+
+  document.getElementById('btn-general').classList.toggle('active', selectedGroup === null && viewFilter === 'all');
+  document.getElementById('btn-nancy').classList.toggle('active', selectedGroup === null && viewFilter === 'nancy');
+  document.getElementById('btn-epinal').classList.toggle('active', selectedGroup === null && viewFilter === 'epinal');
+  document.querySelectorAll('.group-btn').forEach(btn => {
+    btn.classList.toggle('active', selectedGroup !== null && String(btn.dataset.group) === String(selectedGroup));
+  });
+
+  const infoBox = document.getElementById('info-box');
+  if (selectedGroup === null) {
+    infoBox.style.display = 'block';
+    const shown = overviewData();
+    const shownGroups = new Set(shown.map(d => String(d.groupe))).size;
+    const filterLabel = viewFilter === 'nancy' ? ' (étudiant·es Nancy)' : viewFilter === 'epinal' ? ' (étudiant·es Épinal)' : '';
+    infoBox.innerHTML = `<strong>${shown.length}</strong> adresses${filterLabel} réparties sur <strong>${shownGroups}</strong> groupe(s).`;
+  } else {
+    infoBox.style.display = 'none';
+  }
+
+  renderMarkers();
+  renderMemberList();
+}
+
+// Construit le bloc "Destination temporaire" pour le groupe actuellement affiché : options
+// de portée pertinentes (ce groupe / le bassin auquel il appartient), et état actuel si un
+// réglage est déjà en place (venant du groupe lui-même ou de son bassin).
+function renderDestOverrideBox() {
+  if (selectedGroup === null) return;
+  const basin = basinOf(selectedGroup);
+  const basinLabel = basin === 'epinal' ? 'bassin spinalien' : 'bassin nancéien';
+  const nGroupsInBasin = groupList.filter(g => basinOf(g) === basin).length;
+
+  const scopeEl = document.getElementById('dest-override-scope');
+  scopeEl.innerHTML = `
+    <label><input type="radio" name="dest-scope" value="group" checked> Ce groupe uniquement</label>
+    <label><input type="radio" name="dest-scope" value="basin"> Tout le ${basinLabel} (${nGroupsInBasin} groupes)</label>
+  `;
+
+  const { override, scope } = activeOverrideForGroup(selectedGroup);
+  const statusEl = document.getElementById('dest-override-status');
+  if (!override) {
+    statusEl.style.display = 'none';
+    statusEl.innerHTML = '';
+    return;
+  }
+  statusEl.style.display = 'block';
+  const scopeText = scope === 'group' ? 'réglée pour ce groupe seul' : `réglée pour tout le ${basinLabel}`;
+  statusEl.innerHTML = `Destination actuelle : <strong>${esc(override.label)}</strong> (${scopeText}).` +
+    `<br><button class="retry-btn secondary" id="dest-override-clear" type="button">Revenir à la destination normale</button>`;
+  document.getElementById('dest-override-clear').addEventListener('click', () => {
+    if (scope === 'group') groupDestinationOverrides.delete(String(selectedGroup));
+    else basinDestinationOverrides[basin] = null;
+    invalidateAfterDestChange(scope === 'group' ? [selectedGroup] : groupList.filter(g => basinOf(g) === basin));
+  });
+}
+
+// Une destination change : les trajets déjà tracés pour les groupes concernés ne mènent
+// plus au bon endroit — on les invalide, et on rafraîchit l'affichage.
+function invalidateAfterDestChange(affectedGroups) {
+  affectedGroups.forEach(g => savedTraceData.delete(String(g)));
+  if (selectedGroup !== null && affectedGroups.map(String).includes(String(selectedGroup))) {
+    routeResult = null;
+    unassignedIds = new Set();
+    lastTraceData = null;
+    routeLayerGroup.clearLayers();
+    document.getElementById('route-results').innerHTML = '';
+  }
+  renderMarkers();
+  renderMemberList();
+  fitToData();
+}
+
+function renderMemberList() {
+  const panelEl = document.getElementById('member-panel');
+  if (selectedGroup === null) {
+    panelEl.classList.remove('visible');
+    return;
+  }
+  panelEl.classList.add('visible');
+
+  const members = data.filter(d => String(d.groupe) === String(selectedGroup));
+  document.getElementById('member-panel-title').textContent = `Groupe ${selectedGroup} (${members.length} membres) — arrivée : ${destinationLabelForGroup(selectedGroup)}`;
+  renderDestOverrideBox();
+
+  const listEl = document.getElementById('member-list');
+  listEl.innerHTML = '';
+  members.forEach(m => {
+    if (!memberState.has(m.id)) memberState.set(m.id, {
+      driver: isCarDriverMode(m.deplacement),
+      excluded: false, useBackup: false, forceInclude: false
+    });
+    const st = memberState.get(m.id);
+
+    const row = document.createElement('div');
+    row.className = 'member-row' + (st.excluded ? ' excluded' : '');
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = st.driver;
+    cb.disabled = st.excluded;
+    cb.setAttribute('aria-label', `${m.nom} conduit`);
+    cb.addEventListener('change', () => {
+      st.driver = cb.checked;
+      routeResult = null;
+      unassignedIds = new Set();
+  lastTraceData = null;
+      routeLayerGroup.clearLayers();
+      document.getElementById('route-results').innerHTML = '';
+      renderMarkers();
+      updateRouteStatus();
+    });
+
+    const label = document.createElement('div');
+    label.className = 'member-label';
+    const capaTxt = Number.isFinite(m.places) && m.places > 0 ? ` · ${m.places} places` : '';
+    label.innerHTML = `<span class="member-name">${esc(m.nom)}${capaTxt}</span><span class="member-addr">${esc(m.adresse)}, ${esc(m.ville)}</span>`;
+
+    const exBtn = document.createElement('button');
+    exBtn.type = 'button';
+    exBtn.className = 'exclude-btn' + (st.excluded ? ' active' : '');
+    exBtn.setAttribute('aria-pressed', String(st.excluded));
+    exBtn.title = st.excluded ? 'Réintégrer au covoiturage' : 'Exclure du covoiturage';
+    exBtn.textContent = '✕';
+    exBtn.addEventListener('click', () => {
+      st.excluded = !st.excluded;
+      if (st.excluded) st.driver = false;
+      routeResult = null;
+      unassignedIds = new Set();
+  lastTraceData = null;
+      routeLayerGroup.clearLayers();
+      document.getElementById('route-results').innerHTML = '';
+      renderMemberList();
+      renderMarkers();
+      updateRouteStatus();
+    });
+
+    const icon = document.createElement('button');
+    icon.type = 'button';
+    icon.className = 'transport-icon-btn';
+    const refreshIcon = () => {
+      const backupActive = isBackupActive(m);
+      const active = backupActive ? m.deplacementSecours : m.deplacement;
+      const viaWeather = badWeatherMode && m.deplacement === 'À pied' && hasUsableBackup(m) && !(memberState.get(m.id) || {}).useBackup;
+      icon.textContent = transportIcon(active) + (backupActive ? '²' : '');
+      const unstable = isUnstableTransit(m);
+      icon.title = (active || 'Non renseigné') + (backupActive ? ' (Plan B)' : ' (habituel)') +
+        (viaWeather ? ' — activé par le mode mauvais temps' : '') +
+        (hasUsableBackup(m) ? ' — cliquer pour basculer' : '') +
+        (unstable ? ` — ${m.situation} : trajet potentiellement non récurrent` : '');
+      icon.style.cursor = hasUsableBackup(m) ? 'pointer' : 'default';
+      icon.style.opacity = hasUsableBackup(m) ? '1' : '0.55';
+      icon.style.border = unstable ? '2px solid #f59e0b' : (viaWeather ? '2px solid #38bdf8' : '1px solid var(--line)');
+    };
+    refreshIcon();
+    icon.addEventListener('click', () => {
+      if (!hasUsableBackup(m)) return; // pas de Plan B utilisable ("Pas de plan B" ou vide)
+      st.useBackup = !st.useBackup;
+      refreshIcon();
+    });
+
+    let forceBtn = null;
+    if (!isPickupEligible(activeTransportMode(m))) {
+      forceBtn = document.createElement('button');
+      forceBtn.type = 'button';
+      forceBtn.className = 'force-btn' + (st.forceInclude ? ' active' : '');
+      forceBtn.setAttribute('aria-pressed', String(st.forceInclude));
+      forceBtn.title = st.forceInclude
+        ? 'Ne plus forcer dans le covoiturage'
+        : 'Forcer dans le covoiturage malgré le mode habituel';
+      forceBtn.textContent = '🚗+';
+      forceBtn.addEventListener('click', () => {
+        st.forceInclude = !st.forceInclude;
+        routeResult = null;
+        unassignedIds = new Set();
+        lastTraceData = null;
+        routeLayerGroup.clearLayers();
+        document.getElementById('route-results').innerHTML = '';
+        renderMemberList();
+        renderMarkers();
+        updateRouteStatus();
+      });
+    }
+
+    row.appendChild(cb);
+    row.appendChild(icon);
+    row.appendChild(label);
+    if (forceBtn) row.appendChild(forceBtn);
+    row.appendChild(exBtn);
+    listEl.appendChild(row);
+  });
+
+  updateRouteStatus();
+}
+
+function updateRouteStatus() {
+  if (selectedGroup === null || routeResult) return;
+  const members = data.filter(d => String(d.groupe) === String(selectedGroup));
+  const states = members.map(m => memberState.get(m.id) || { driver: false, excluded: false, useBackup: false, forceInclude: false });
+  const nDrivers = states.filter(s => s.driver && !s.excluded).length;
+  const nExcluded = states.filter(s => s.excluded).length;
+  const nPassengers = members.length - nDrivers - nExcluded;
+  document.getElementById('route-status').textContent =
+    `${nDrivers} conducteur(s), ${nPassengers} passager(s), ${nExcluded} exclu(s).`;
+  document.getElementById('trace-btn').disabled = nDrivers === 0;
+}
+
+// ------------------------------------------------------------------
+// CALCUL D'ITINÉRAIRE
+// Construction gloutonne : à chaque étape, insertion la moins émettrice de CO2
+// (distance ajoutée) parmi celles dont le détour reste sous MAX_DETOUR_SECONDS
+// et dont la capacité du conducteur n'est pas dépassée.
+// Amélioration locale ensuite : relocalisation d'un passager si cela réduit la
+// distance totale, toujours sous les mêmes contraintes.
+// ------------------------------------------------------------------
+function haversine(a, b) {
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+  const la1 = a.lat * Math.PI / 180, la2 = b.lat * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// ------------------------------------------------------------------
+// Recréation des groupes par proximité géographique (k-means équilibré en taille).
+// ------------------------------------------------------------------
+
+// Choisit k centroïdes de départ, espacés (k-means++) : réduit le risque de mauvais
+// regroupement dû à un tirage initial malchanceux.
+function kmeansPlusPlusInit(points, k) {
+  const centroids = [];
+  const first = points[Math.floor(Math.random() * points.length)];
+  centroids.push({ lat: first.lat, lon: first.lon });
+  while (centroids.length < k) {
+    const dist2 = points.map(p => Math.min(...centroids.map(c => haversine(p, c))) ** 2);
+    const total = dist2.reduce((a, b) => a + b, 0);
+    if (total === 0) {
+      const p = points[Math.floor(Math.random() * points.length)];
+      centroids.push({ lat: p.lat, lon: p.lon });
+      continue;
+    }
+    let r = Math.random() * total;
+    let chosen = points[points.length - 1];
+    for (let i = 0; i < points.length; i++) {
+      r -= dist2[i];
+      if (r <= 0) { chosen = points[i]; break; }
+    }
+    centroids.push({ lat: chosen.lat, lon: chosen.lon });
+  }
+  return centroids;
+}
+
+// Répartit n personnes en k groupes le plus également possible (écart d'au plus 1 entre
+// le plus petit et le plus grand groupe).
+function computeTargetSizes(n, k) {
+  const base = Math.floor(n / k);
+  const remainder = n - base * k;
+  return Array.from({ length: k }, (_, i) => i < remainder ? base + 1 : base);
+}
+
+// Assigne chaque personne à un centroïde en respectant strictement les tailles cibles :
+// trie toutes les paires (personne, centroïde) par distance, assigne glouton en sautant
+// les centroïdes déjà à leur taille cible. Comme la somme des tailles cibles == nombre de
+// personnes, tout le monde est toujours casé (aucune personne ne peut rester sans groupe).
+// Si minCarPerGroup > 0, une première passe place en priorité les personnes en capacité de
+// conduire (par proximité aussi) jusqu'à ce que chaque groupe atteigne ce minimum — dans la
+// limite du possible si la population ne compte pas assez de conducteur·rices potentiel·les
+// au total. Le reste est complété normalement à la deuxième passe.
+function balancedAssign(points, centroids, targetSizes, minCarPerGroup) {
+  minCarPerGroup = minCarPerGroup || 0;
+  const k = centroids.length;
+  const assignments = new Array(points.length).fill(-1);
+  const counts = new Array(k).fill(0);
+  const carCounts = new Array(k).fill(0);
+  let filled = 0;
+
+  if (minCarPerGroup > 0) {
+    const carPairs = [];
+    for (let i = 0; i < points.length; i++) {
+      if (!hasCarCapability(points[i])) continue;
+      for (let c = 0; c < k; c++) carPairs.push({ i, c, d: haversine(points[i], centroids[c]) });
+    }
+    carPairs.sort((a, b) => a.d - b.d);
+    for (const pair of carPairs) {
+      if (assignments[pair.i] !== -1) continue;
+      if (carCounts[pair.c] >= minCarPerGroup) continue;
+      if (counts[pair.c] >= targetSizes[pair.c]) continue;
+      assignments[pair.i] = pair.c;
+      counts[pair.c]++;
+      carCounts[pair.c]++;
+      filled++;
+    }
+  }
+
+  const pairs = [];
+  for (let i = 0; i < points.length; i++) {
+    if (assignments[i] !== -1) continue;
+    for (let c = 0; c < k; c++) pairs.push({ i, c, d: haversine(points[i], centroids[c]) });
+  }
+  pairs.sort((a, b) => a.d - b.d);
+  for (const pair of pairs) {
+    if (filled === points.length) break;
+    if (assignments[pair.i] !== -1) continue;
+    if (counts[pair.c] >= targetSizes[pair.c]) continue;
+    assignments[pair.i] = pair.c;
+    counts[pair.c]++;
+    filled++;
+  }
+  return assignments;
+}
+
+function recomputeCentroids(points, assignments, k, previous) {
+  const sums = Array.from({ length: k }, () => ({ lat: 0, lon: 0, n: 0 }));
+  for (let i = 0; i < points.length; i++) {
+    const c = assignments[i];
+    sums[c].lat += points[i].lat; sums[c].lon += points[i].lon; sums[c].n++;
+  }
+  return sums.map((s, i) => s.n > 0 ? { lat: s.lat / s.n, lon: s.lon / s.n } : previous[i]);
+}
+
+function totalWithinClusterDistance(points, assignments, centroids) {
+  let total = 0;
+  for (let i = 0; i < points.length; i++) total += haversine(points[i], centroids[assignments[i]]);
+  return total;
+}
+
+// k-means avec assignation à taille contrainte : alterne "assigner en respectant les
+// tailles cibles" et "recalculer les centroïdes", jusqu'à stabilité.
+function runBalancedKMeans(points, k, targetSizes, maxIter, minCarPerGroup) {
+  let centroids = kmeansPlusPlusInit(points, k);
+  let assignments = null;
+  for (let iter = 0; iter < maxIter; iter++) {
+    const newAssignments = balancedAssign(points, centroids, targetSizes, minCarPerGroup);
+    const changed = !assignments || newAssignments.some((a, i) => a !== assignments[i]);
+    assignments = newAssignments;
+    centroids = recomputeCentroids(points, assignments, k, centroids);
+    if (!changed) break;
+  }
+  return { assignments, centroids, cost: totalWithinClusterDistance(points, assignments, centroids) };
+}
+
+// Plusieurs essais (le tirage initial des centroïdes est aléatoire) ; garde le résultat le
+// plus compact (somme des distances personne→centroïde de son groupe la plus faible).
+function clusterWithRestarts(points, k, targetSizes, restarts, minCarPerGroup) {
+  let best = null;
+  for (let attempt = 0; attempt < restarts; attempt++) {
+    const result = runBalancedKMeans(points, k, targetSizes, 15, minCarPerGroup);
+    if (best === null || result.cost < best.cost) best = result;
+  }
+  return best;
+}
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function fetchDurationMatrix(points, profile) {
+  profile = profile || 'driving';
+  const coords = points.map(p => `${p.lon},${p.lat}`).join(';');
+  const url = `https://router.project-osrm.org/table/v1/${profile}/${coords}?annotations=duration,distance`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const json = await res.json();
+  if (json.code !== 'Ok') throw new Error(json.code || 'table error');
+  return json;
+}
+
+async function fetchRoadRoute(waypoints) {
+  const coords = waypoints.map(w => `${w.lon},${w.lat}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const json = await res.json();
+  if (json.code !== 'Ok' || !json.routes || !json.routes.length) throw new Error(json.code || 'no route');
+  const r = json.routes[0];
+  return { geometry: r.geometry, duration: r.duration, distance: r.distance };
+}
+
+function fmtMin(seconds) { return Math.round(seconds / 60) + ' min'; }
+function fmtKm(km) { return km.toFixed(1) + ' km'; }
+function fmtKg(kg) { return kg.toFixed(2) + ' kg'; }
+function fmtEuro(e) { return e.toFixed(2) + ' €'; }
+// Échappe les données provenant du fichier importé (noms, adresses...) avant insertion
+// dans le HTML — une adresse ou un nom contenant par erreur des caractères < > pourrait
+// sinon perturber l'affichage de la page.
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+async function traceRoutes() {
+  const members = data.filter(d => String(d.groupe) === String(selectedGroup));
+  const enriched = members.map(d => Object.assign({}, d, memberState.get(d.id) || { driver: false, excluded: false, useBackup: false, forceInclude: false }));
+  const active = enriched.filter(d => !d.excluded);
+  const drivers = active.filter(d => d.driver);
+  const nonDrivers = active.filter(d => !d.driver);
+
+  // Seules les personnes en voiture sont candidates au ramassage : le covoiturage
+  // consolide des voitures, il n'a pas de sens de "ramasser" quelqu'un déjà en bus/moto/vélo.
+  // En mode "tout le monde", tout le monde (quel que soit son mode de déplacement) devient
+  // candidat au ramassage — seules les voitures individuelles cochées restent des conductrices
+  // potentielles, le reste de la population est à covoiturer.
+  const pickupCandidates = nonDrivers.filter(m => everyoneMode || isPickupEligible(activeTransportMode(m)) || m.forceInclude);
+  const independentMembers = nonDrivers.filter(m => !everyoneMode && !isPickupEligible(activeTransportMode(m)) && !m.forceInclude);
+
+  if (drivers.length === 0) {
+    document.getElementById('route-status').textContent = "Cochez au moins un conducteur pour tracer un itinéraire.";
+    return;
+  }
+
+  const btn = document.getElementById('trace-btn');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Calcul en cours…';
+  document.getElementById('route-status').textContent = 'Calcul de la matrice de trajets…';
+  document.getElementById('route-results').innerHTML = '';
+  routeLayerGroup.clearLayers();
+
+  try {
+    const dest = destinationForGroup(selectedGroup);
+
+    // Table "route" : conducteurs + candidats au ramassage + indépendants routiers
+    // (moto/bus/train, faute de données transport en commun on utilise le réseau routier
+    // comme approximation de distance).
+    const roadProxyIndependents = independentMembers.filter(m => profileFor(activeTransportMode(m)).kind === 'driving');
+    const cycleIndependents = independentMembers.filter(m => profileFor(activeTransportMode(m)).kind === 'cycling');
+    const footIndependents = independentMembers.filter(m => profileFor(activeTransportMode(m)).kind === 'foot');
+
+    const roadPoints = [...drivers, ...pickupCandidates, ...roadProxyIndependents, dest];
+    const roadDestIdx = roadPoints.length - 1;
+    const roadIndexOf = new Map();
+    roadPoints.forEach((p, i) => { if (p !== dest) roadIndexOf.set(p, i); });
+
+    let T, D, usedMatrixFallback = false;
+    try {
+      const table = await fetchDurationMatrix(roadPoints, 'driving');
+      T = table.durations;
+      D = table.distances;
+      await sleep(1100); // respecte la limite ~1 req/s du service public OSRM
+    } catch (err) {
+      usedMatrixFallback = true;
+      const n = roadPoints.length;
+      T = []; D = [];
+      for (let i = 0; i < n; i++) {
+        T.push([]); D.push([]);
+        for (let j = 0; j < n; j++) {
+          const km = haversine(roadPoints[i], roadPoints[j]);
+          D[i][j] = km * 1000;
+          T[i][j] = (km / FALLBACK_SPEED_KMH) * 3600;
+        }
+      }
+    }
+
+    // Tables optionnelles (vélo / marche-trottinette), uniquement si des personnes concernées
+    let cycleT = null, cycleD = null, cycleDestIdx = -1;
+    const cycleIndexOf = new Map();
+    if (cycleIndependents.length) {
+      try {
+        const cyclePoints = [...cycleIndependents, dest];
+        cycleDestIdx = cyclePoints.length - 1;
+        cyclePoints.forEach((p, i) => { if (p !== dest) cycleIndexOf.set(p, i); });
+        const t = await fetchDurationMatrix(cyclePoints, 'cycling');
+        cycleT = t.durations; cycleD = t.distances;
+        await sleep(1100);
+      } catch (err) { /* repli à vol d'oiseau géré dans soloMetrics */ }
+    }
+
+    let footT = null, footD = null, footDestIdx = -1;
+    const footIndexOf = new Map();
+    if (footIndependents.length) {
+      try {
+        const footPoints = [...footIndependents, dest];
+        footDestIdx = footPoints.length - 1;
+        footPoints.forEach((p, i) => { if (p !== dest) footIndexOf.set(p, i); });
+        const t = await fetchDurationMatrix(footPoints, 'foot');
+        footT = t.durations; footD = t.distances;
+        await sleep(1100);
+      } catch (err) { /* repli à vol d'oiseau géré dans soloMetrics */ }
+    }
+
+    // Métriques solo d'une personne, selon SON propre mode de déplacement actif.
+    function soloMetrics(m) {
+      const mode = activeTransportMode(m);
+      const profile = profileFor(mode);
+      let km, seconds;
+      if (profile.kind === 'driving' && roadIndexOf.has(m)) {
+        const idx = roadIndexOf.get(m);
+        km = D[idx][roadDestIdx] / 1000;
+        seconds = profile.speedKmh ? (km / profile.speedKmh * 3600) : T[idx][roadDestIdx];
+      } else if (profile.kind === 'cycling' && cycleIndexOf.has(m)) {
+        const idx = cycleIndexOf.get(m);
+        km = cycleD[idx][cycleDestIdx] / 1000;
+        seconds = cycleT[idx][cycleDestIdx];
+      } else if (profile.kind === 'foot' && footIndexOf.has(m)) {
+        const idx = footIndexOf.get(m);
+        km = footD[idx][footDestIdx] / 1000;
+        seconds = profile.speedKmh ? (km / profile.speedKmh * 3600) : footT[idx][footDestIdx];
+      } else {
+        km = haversine(m, dest);
+        seconds = (km / (profile.speedKmh || FALLBACK_SPEED_KMH)) * 3600;
+      }
+      return { km, seconds, co2: km * profile.emission / 1000, cost: km * profile.cost };
+    }
+
+    // Capacité de CHAQUE personne cochée (le pool complet, avant qu'on ne sache qui va
+    // vraiment conduire).
+    const capacities = drivers.map(d => (Number.isFinite(d.places) && d.places > 0) ? d.places : DEFAULT_CAPACITY);
+
+    function bestInsertion(route, candidateIdx) {
+      let best = { pos: -1, cost: Infinity };
+      for (let k = 0; k < route.length - 1; k++) {
+        const a = route[k], b = route[k + 1];
+        const timeCost = T[a][candidateIdx] + T[candidateIdx][b] - T[a][b];
+        if (timeCost > MAX_DETOUR_SECONDS) continue;
+        const distCost = D[a][candidateIdx] + D[candidateIdx][b] - D[a][b];
+        if (distCost < best.cost) best = { pos: k + 1, cost: distCost };
+      }
+      return best;
+    }
+
+    // ÉTAPE 1 — Consolidation par économies (algorithme des économies, Clarke & Wright) :
+    // toutes les personnes cochées démarrent comme leur propre conducteur·rice, seule dans
+    // sa voiture. À chaque étape, on cherche la fusion la plus rentable : absorber une
+    // personne encore seule dans le trajet d'une autre, quand le détour que ça coûte est
+    // plus petit que le trajet qu'elle aurait fait seule (donc un gain net de distance,
+    // pas juste "ça rentre dans les 15 min"). On répète jusqu'à ce qu'aucune fusion ne soit
+    // plus avantageuse. Résultat : le nombre de conducteurs réels n'est plus fixé par les
+    // cases cochées une par une, mais déduit de ce qui minimise la distance totale.
+    function runSavingsConsolidation() {
+      const routes = new Map(), loads = new Map(), solo = new Set();
+      for (let i = 0; i < drivers.length; i++) {
+        routes.set(i, [i, roadDestIdx]);
+        loads.set(i, 0);
+        solo.add(i);
+      }
+      let improved = true;
+      while (improved) {
+        improved = false;
+        let best = null;
+        for (const driverIdx of routes.keys()) {
+          if (loads.get(driverIdx) >= capacities[driverIdx]) continue;
+          for (const passengerIdx of solo) {
+            if (passengerIdx === driverIdx) continue;
+            const ins = bestInsertion(routes.get(driverIdx), passengerIdx);
+            if (ins.pos === -1) continue;
+            const soloDist = D[passengerIdx][roadDestIdx]; // ce que cette personne aurait parcouru seule
+            const netSaving = soloDist - ins.cost; // positif = la fusion réduit la distance totale
+            if (netSaving > 1e-6 && (best === null || netSaving > best.netSaving)) {
+              best = { driverIdx, passengerIdx, insertPos: ins.pos, netSaving };
+            }
+          }
+        }
+        if (best === null) break;
+        const route = routes.get(best.driverIdx);
+        route.splice(best.insertPos, 0, best.passengerIdx);
+        loads.set(best.driverIdx, loads.get(best.driverIdx) + 1);
+        solo.delete(best.passengerIdx);
+        solo.delete(best.driverIdx);
+        routes.delete(best.passengerIdx);
+        loads.delete(best.passengerIdx);
+        improved = true;
+      }
+      return { routes, loads };
+    }
+
+    // En mode "tout le monde", on ne consolide PAS les conducteur·rices cochées entre
+    // elles/eux : le nombre de candidat·es à covoiturer est potentiellement très grand
+    // (tout le monde, pas seulement les gens en voiture), donc réduire le nombre de
+    // voitures à ce stade réduirait la capacité totale disponible pour eux/elles — contre
+    // l'objectif de ce mode, qui est justement de voir combien de monde peut être absorbé.
+    let survivingIdxs, survivingDrivers, survivingCapacities, baseRoutes, baseLoads;
+    if (everyoneMode) {
+      survivingIdxs = drivers.map((_, i) => i);
+      survivingDrivers = drivers;
+      survivingCapacities = capacities;
+      baseRoutes = drivers.map((d, i) => [i, roadDestIdx]);
+      baseLoads = drivers.map(() => 0);
+    } else {
+      const consolidation = runSavingsConsolidation();
+      survivingIdxs = [...consolidation.routes.keys()].sort((a, b) => a - b);
+      survivingDrivers = survivingIdxs.map(idx => drivers[idx]);
+      survivingCapacities = survivingIdxs.map(idx => capacities[idx]);
+      baseRoutes = survivingIdxs.map(idx => consolidation.routes.get(idx));
+      baseLoads = survivingIdxs.map(idx => consolidation.loads.get(idx));
+    }
+
+    // ÉTAPE 2 — Insertion des candidats non cochés (mode voiture mais pas sélectionnés
+    // comme conducteur·rices) dans les trajets des conducteur·rices survivant·es de l'étape 1.
+    // Construction : à chaque étape, parmi toutes les insertions valides, choisit la moins
+    // chère (randomize=false, comportement d'origine) ou tire au sort parmi les 3 moins
+    // chères (randomize=true) — permet à plusieurs essais de diverger.
+    function runConstruction(randomize) {
+      const routes = baseRoutes.map(r => [...r]);
+      const routeLoads = [...baseLoads];
+      const remaining = pickupCandidates.map((c, i) => drivers.length + i);
+
+      while (remaining.length) {
+        const options = [];
+        for (let di = 0; di < routes.length; di++) {
+          if (routeLoads[di] >= survivingCapacities[di]) continue;
+          for (let ci = 0; ci < remaining.length; ci++) {
+            const ins = bestInsertion(routes[di], remaining[ci]);
+            if (ins.pos === -1) continue;
+            options.push({ driverIdx: di, candPos: ci, insertPos: ins.pos, cost: ins.cost });
+          }
+        }
+        if (options.length === 0) break;
+        options.sort((a, b) => a.cost - b.cost);
+        const choice = (randomize && options.length > 1)
+          ? options[Math.floor(Math.random() * Math.min(3, options.length))]
+          : options[0];
+        const candIdx = remaining.splice(choice.candPos, 1)[0];
+        routes[choice.driverIdx].splice(choice.insertPos, 0, candIdx);
+        routeLoads[choice.driverIdx]++;
+      }
+      return { routes, routeLoads, remaining };
+    }
+
+    function routeDistance(route) {
+      let total = 0;
+      for (let k = 0; k < route.length - 1; k++) total += D[route[k]][route[k + 1]];
+      return total;
+    }
+    function totalDistance(routes) {
+      return routes.reduce((sum, r) => sum + routeDistance(r), 0);
+    }
+    function localSearchImprove(routes, routeLoads) {
+      for (let pass = 0; pass < 200; pass++) {
+        let improved = false;
+        outer:
+        for (let di = 0; di < routes.length; di++) {
+          for (let pi = 1; pi < routes[di].length - 1; pi++) {
+            const passenger = routes[di][pi];
+            const withoutRoute = routes[di].slice(0, pi).concat(routes[di].slice(pi + 1));
+            const removedGain = routeDistance(routes[di]) - routeDistance(withoutRoute);
+
+            for (let dj = 0; dj < routes.length; dj++) {
+              if (dj !== di && routeLoads[dj] >= survivingCapacities[dj]) continue;
+              const target = dj === di ? withoutRoute : routes[dj];
+              const ins = bestInsertion(target, passenger);
+              if (ins.pos === -1) continue;
+              if (dj === di && ins.pos === pi) continue;
+
+              if (ins.cost < removedGain - 1e-6) {
+                const newTarget = target.slice(0, ins.pos).concat([passenger], target.slice(ins.pos));
+                if (dj === di) {
+                  routes[di] = newTarget;
+                } else {
+                  routes[di] = withoutRoute;
+                  routes[dj] = newTarget;
+                  routeLoads[di]--;
+                  routeLoads[dj]++;
+                }
+                improved = true;
+                break outer;
+              }
+            }
+          }
+        }
+        if (!improved) break;
+      }
+    }
+
+    // Essai déterministe (comportement d'origine) + plusieurs essais randomisés ; on garde
+    // le résultat de distance totale la plus faible après amélioration locale de chacun.
+    const RESTARTS = 6;
+    let bestRun = null;
+    for (let attempt = 0; attempt <= RESTARTS; attempt++) {
+      const run = runConstruction(attempt > 0);
+      localSearchImprove(run.routes, run.routeLoads);
+      const dist = totalDistance(run.routes);
+      if (bestRun === null || dist < bestRun.dist) bestRun = { ...run, dist };
+    }
+    const routes = bestRun.routes, routeLoads = bestRun.routeLoads, remaining = bestRun.remaining;
+
+    unassignedIds = new Set(remaining.map(idx => roadPoints[idx].id));
+
+    document.getElementById('route-status').textContent = 'Calcul des itinéraires routiers…';
+
+    const palette = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#6a4c93', '#ef476f', '#e9c46a', '#118ab2'];
+    const colorByDriver = new Map();
+    const colorByPassenger = new Map();
+    const driverInfos = [];
+    const driverGeometries = [];
+    let anyRouteFallback = false;
+
+    for (let di = 0; di < survivingDrivers.length; di++) {
+      const d = survivingDrivers[di];
+      const color = palette[di % palette.length];
+      colorByDriver.set(d.id, color);
+
+      const stopPoints = routes[di].map(idx => roadPoints[idx]);
+      const passengerStops = stopPoints.slice(1, -1);
+      passengerStops.forEach(p => colorByPassenger.set(p.id, color));
+
+      let geometry, carpoolSeconds, carpoolKm, usedFallback = false;
+      try {
+        const route = await fetchRoadRoute(stopPoints);
+        geometry = route.geometry;
+        carpoolSeconds = route.duration;
+        carpoolKm = route.distance / 1000;
+      } catch (err) {
+        geometry = { type: 'LineString', coordinates: stopPoints.map(w => [w.lon, w.lat]) };
+        carpoolKm = 0;
+        for (let i = 1; i < stopPoints.length; i++) carpoolKm += haversine(stopPoints[i - 1], stopPoints[i]);
+        carpoolSeconds = (carpoolKm / FALLBACK_SPEED_KMH) * 3600;
+        usedFallback = true;
+        anyRouteFallback = true;
+      }
+
+      L.geoJSON(geometry, {
+        style: { color, weight: 4, opacity: 0.85, dashArray: usedFallback ? '7,7' : null }
+      }).addTo(routeLayerGroup);
+      driverGeometries.push({ geometry, color, usedFallback });
+
+      driverInfos.push({
+        nom: d.nom, color, capacity: survivingCapacities[di], nPassengers: passengerStops.length,
+        carpoolSeconds, carpoolKm,
+        carpoolCO2: carpoolKm * EMISSION_G_PER_KM / 1000,
+        carpoolCost: carpoolKm * COST_PER_KM
+      });
+
+      if (di < survivingDrivers.length - 1) await sleep(1100);
+    }
+
+    // Totaux resserrés : seulement les personnes concernées par CET itinéraire (voitures
+    // cochées + candidat·es au ramassage, intégré·es ou non), pas les indépendant·es qui
+    // n'en font pas partie. Utilisés à la fois pour l'écran et pour le PDF.
+    const concerned = [...drivers, ...pickupCandidates];
+    let concernedSeulKm = 0, concernedSeulSeconds = 0, concernedSeulCO2 = 0, concernedSeulCost = 0;
+    concerned.forEach(m => {
+      const s = soloMetrics(m);
+      concernedSeulKm += s.km; concernedSeulSeconds += s.seconds; concernedSeulCO2 += s.co2; concernedSeulCost += s.cost;
+    });
+    let concernedCovoitKm = 0, concernedCovoitSeconds = 0, concernedCovoitCO2 = 0, concernedCovoitCost = 0;
+    driverInfos.forEach(r => {
+      concernedCovoitKm += r.carpoolKm; concernedCovoitSeconds += r.carpoolSeconds;
+      concernedCovoitCO2 += r.carpoolCO2; concernedCovoitCost += r.carpoolCost;
+    });
+    pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(m => {
+      const s = soloMetrics(m);
+      concernedCovoitKm += s.km; concernedCovoitSeconds += s.seconds; concernedCovoitCO2 += s.co2; concernedCovoitCost += s.cost;
+    });
+    const concernedTotals = {
+      seulKm: concernedSeulKm, seulSeconds: concernedSeulSeconds, seulCO2: concernedSeulCO2, seulCost: concernedSeulCost,
+      covoitKm: concernedCovoitKm, covoitSeconds: concernedCovoitSeconds, covoitCO2: concernedCovoitCO2, covoitCost: concernedCovoitCost
+    };
+
+    routeResult = { colorByDriver, colorByPassenger };
+
+    // Détail par personne, pour l'export (colonne "seul" avec visibilité individuelle,
+    // plutôt qu'une somme opaque). Chaque passager·ère apparaît juste après son
+    // conducteur·rice, dans l'ordre de ramassage ; les indépendant·es sont regroupé·es
+    // par mode de déplacement.
+    const perPerson = [];
+    survivingDrivers.forEach((d, di) => {
+      const s = soloMetrics(d);
+      const info = driverInfos[di];
+      perPerson.push({
+        nom: d.nom, role: 'Conducteur·rice', mode: activeTransportMode(d) || '—',
+        seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
+        covoitLabel: `Conduit : ${fmtKm(info.carpoolKm)}, ${fmtMin(info.carpoolSeconds)}, ${fmtKg(info.carpoolCO2)}, ${fmtEuro(info.carpoolCost)}`
+      });
+      routes[di].slice(1, -1).forEach(idx => {
+        const c = roadPoints[idx];
+        const sc = soloMetrics(c);
+        perPerson.push({
+          nom: c.nom, mode: activeTransportMode(c) || '—',
+          role: `Passager·ère (avec ${d.nom})`,
+          seulKm: sc.km, seulSeconds: sc.seconds, seulCO2: sc.co2, seulCost: sc.cost,
+          covoitLabel: `Absorbé dans le trajet de ${d.nom}`
+        });
+      });
+    });
+    pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(c => {
+      const s = soloMetrics(c);
+      perPerson.push({
+        nom: c.nom, mode: activeTransportMode(c) || '—', role: 'Non intégré(e)',
+        seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
+        covoitLabel: 'Non intégré(e) : trajet seul inchangé'
+      });
+    });
+    const modeOrder = Object.keys(TRANSPORT_PROFILES);
+    const sortedIndependents = [...independentMembers].sort((a, b) =>
+      modeOrder.indexOf(activeTransportMode(a)) - modeOrder.indexOf(activeTransportMode(b))
+    );
+    sortedIndependents.forEach(m => {
+      const s = soloMetrics(m);
+      perPerson.push({
+        nom: m.nom, role: 'Indépendant(e)', mode: activeTransportMode(m) || '—',
+        seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
+        covoitLabel: 'Inchangé (mode indépendant)'
+      });
+    });
+    lastTraceData = {
+      perPerson,
+      groupLabel: `Groupe ${selectedGroup}`,
+      destLabel: destinationLabelForGroup(selectedGroup),
+      concernedTotals,
+      generatedAt: new Date()
+    };
+    savedTraceData.set(selectedGroup, {
+      perPerson, driverGeometries,
+      colorByDriver: new Map(colorByDriver), colorByPassenger: new Map(colorByPassenger),
+      unassignedIds: new Set(unassignedIds),
+      memberStateSnapshot: new Map([...memberState].map(([k, v]) => [k, { ...v }])),
+      concernedTotals
+    });
+
+    renderMarkers();
+    const unassignedNames = pickupCandidates.filter(c => unassignedIds.has(c.id)).map(c => c.nom);
+
+    renderResults(driverInfos, {
+      seulKm: concernedTotals.seulKm, seulSeconds: concernedTotals.seulSeconds,
+      seulCO2: concernedTotals.seulCO2, seulCost: concernedTotals.seulCost,
+      covoitKm: concernedTotals.covoitKm, covoitSeconds: concernedTotals.covoitSeconds,
+      covoitCO2: concernedTotals.covoitCO2, covoitCost: concernedTotals.covoitCost,
+      nPeople: concerned.length, nIndependent: independentMembers.length
+    }, usedMatrixFallback || anyRouteFallback, unassignedNames);
+  } catch (err) {
+    document.getElementById('route-status').textContent = "Erreur lors du calcul (service de trajets indisponible). Réessayez dans quelques instants.";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+function renderResults(driverInfos, totals, usedFallback, unassignedNames) {
+  const nPassengersTotal = driverInfos.reduce((s, r) => s + r.nPassengers, 0);
+  let statusMsg = `${driverInfos.length} trajet(s) · ${nPassengersTotal} passager(s) amené(s) à destination · ${totals.nIndependent} en mode indépendant (bus/moto/vélo/à pied).`;
+  if (unassignedIds.size > 0) {
+    statusMsg += ` Il manque ${unassignedIds.size} place(s) : ${unassignedNames.join(', ')} non covoituré(e)(s) (détour > 15 min ou capacité atteinte).`;
+  }
+  if (usedFallback) statusMsg += ' Une partie du calcul utilise une estimation à vol d\'oiseau (service de routage indisponible pour ce segment).';
+  document.getElementById('route-status').textContent = statusMsg;
+
+  const container = document.getElementById('route-results');
+  container.innerHTML = '';
+
+  driverInfos.forEach(r => {
+    const line = document.createElement('div');
+    line.className = 'driver-line';
+    line.innerHTML = `<span class="dot" style="background:${r.color}"></span>${esc(r.nom)} — ${r.nPassengers}/${r.capacity} places · ${fmtKm(r.carpoolKm)} · ${fmtMin(r.carpoolSeconds)}`;
+    container.appendChild(line);
+  });
+
+  const table = document.createElement('table');
+  table.className = 'metric-table group-metric-table';
+  table.innerHTML = `
+    <tr><th></th><th>Seul</th><th>Covoit.</th></tr>
+    <tr><td>Temps</td><td>${fmtMin(totals.seulSeconds)}</td><td>${fmtMin(totals.covoitSeconds)}</td></tr>
+    <tr><td>Distance</td><td>${fmtKm(totals.seulKm)}</td><td>${fmtKm(totals.covoitKm)}</td></tr>
+    <tr><td>CO₂</td><td>${fmtKg(totals.seulCO2)}</td><td>${fmtKg(totals.covoitCO2)}</td></tr>
+    <tr><td>Coût</td><td>${fmtEuro(totals.seulCost)}</td><td>${fmtEuro(totals.covoitCost)}</td></tr>
+  `;
+  container.appendChild(table);
+}
+
+document.getElementById('btn-general').addEventListener('click', () => { viewFilter = 'all'; selectGroup(null); });
+document.getElementById('btn-nancy').addEventListener('click', () => { viewFilter = 'nancy'; selectGroup(null); });
+document.getElementById('btn-epinal').addEventListener('click', () => { viewFilter = 'epinal'; selectGroup(null); });
+
+document.getElementById('bad-weather-toggle').addEventListener('change', (e) => {
+  badWeatherMode = e.target.checked;
+  // Les modes effectifs changent potentiellement pour tout le monde à pied, dans tous les
+  // groupes : les trajets déjà tracés (mémorisés pour l'export groupé) sont donc obsolètes.
+  savedTraceData = new Map();
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+  renderMarkers();
+  renderMemberList();
+  updateRouteStatus();
+});
+document.getElementById('closest-address-toggle').addEventListener('change', (e) => {
+  useClosestAddress = e.target.checked;
+  applyClosestAddressPreference();
+  // Les positions de certaines personnes changent : les trajets déjà tracés sont obsolètes.
+  savedTraceData = new Map();
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+  renderMarkers();
+  renderMemberList();
+  fitToData();
+});
+document.getElementById('everyone-mode-toggle').addEventListener('change', (e) => {
+  everyoneMode = e.target.checked;
+  // Qui est candidat·e au ramassage change potentiellement pour tout le monde : les trajets
+  // déjà tracés sont obsolètes.
+  savedTraceData = new Map();
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+  renderMarkers();
+  renderMemberList();
+  updateRouteStatus();
+});
+document.getElementById('trace-btn').addEventListener('click', traceRoutes);
+
+document.getElementById('dest-override-apply').addEventListener('click', async () => {
+  if (selectedGroup === null) return;
+  const input = document.getElementById('dest-override-input');
+  const address = input.value.trim();
+  if (!address) { alert('Saisissez une adresse avant de cliquer sur Appliquer.'); return; }
+  const scope = document.querySelector('input[name="dest-scope"]:checked').value; // 'group' | 'basin'
+  const basin = basinOf(selectedGroup);
+
+  const btn = document.getElementById('dest-override-apply');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Géolocalisation…';
+  try {
+    const g = await geocodeAddress(address, '');
+    if (!g) {
+      alert(`Adresse introuvable : "${address}". Vérifiez l'orthographe ou essayez une formulation plus précise (numéro, rue, ville).`);
+      return;
+    }
+    const override = { lat: g.lat, lon: g.lon, label: address };
+    let affected;
+    if (scope === 'group') {
+      groupDestinationOverrides.set(String(selectedGroup), override);
+      affected = [selectedGroup];
+    } else {
+      basinDestinationOverrides[basin] = override;
+      affected = groupList.filter(gr => basinOf(gr) === basin);
+    }
+    input.value = '';
+    invalidateAfterDestChange(affected);
+  } catch (err) {
+    alert("Erreur pendant la géolocalisation de cette adresse. Réessayez dans un instant.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
+document.getElementById('reset-group-btn').addEventListener('click', () => {
+  if (selectedGroup === null) return;
+  const members = data.filter(d => String(d.groupe) === String(selectedGroup));
+  members.forEach(m => memberState.set(m.id, {
+    driver: isCarDriverMode(m.deplacement),
+    excluded: false, useBackup: false, forceInclude: false
+  }));
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+  renderMemberList();
+  renderMarkers();
+  updateRouteStatus();
+});
+
+function captureControlsToHide() {
+  return [
+    map.zoomControl && map.zoomControl.getContainer(),
+    ...document.querySelectorAll('.weather-toggle'),
+    document.getElementById('btn-general'),
+    document.getElementById('btn-nancy'),
+    document.getElementById('btn-epinal'),
+    document.getElementById('groups-label'),
+    document.getElementById('group-grid'),
+    document.getElementById('info-box'),
+    document.getElementById('member-list'),
+    document.getElementById('dest-override-box'),
+    document.querySelector('.member-panel-actions'),
+    document.getElementById('basemap-hint'),
+    document.querySelector('.upload-box'),
+    document.getElementById('capture-btn'),
+    document.getElementById('export-all-btn'),
+    document.getElementById('retry-geocode-btn'),
+    document.getElementById('view-failed-btn'),
+    document.getElementById('regroup-btn'),
+    document.getElementById('history-btn')
+  ].filter(Boolean);
+}
+
+function exportTitle() {
+  return selectedGroup === null
+    ? 'Vue générale — toutes adresses'
+    : `Groupe ${selectedGroup} — arrivée : ${destinationLabelForGroup(selectedGroup)}`;
+}
+
+// ------------------------------------------------------------------
+// Fonctions partagées entre l'export individuel et l'export groupé
+// ------------------------------------------------------------------
+
+// Ne garde que les personnes concernées par le covoiturage (conducteur·rices, passager·ères,
+// non intégré·es) — pas les indépendant·es, qui ne font pas partie du calcul.
+function filterConcerned(perPerson) {
+  return perPerson.filter(p => p.role !== 'Indépendant(e)');
+}
+
+// Bilan chiffré d'un groupe, calculé uniquement sur les personnes concernées.
+function computeGroupBilan(concernedRows, totals) {
+  const nDrivers = concernedRows.filter(p => p.role === 'Conducteur·rice').length;
+  const nPassengers = concernedRows.filter(p => p.role.startsWith('Passager')).length;
+  const nUnassigned = concernedRows.filter(p => p.role === 'Non intégré(e)').length;
+  const nCarPeople = nDrivers + nPassengers + nUnassigned;
+  const carsAvoided = nCarPeople - nDrivers;
+
+  const co2Saved = totals.seulCO2 - totals.covoitCO2;
+  const co2Pct = totals.seulCO2 > 0 ? (co2Saved / totals.seulCO2 * 100) : 0;
+  const costSaved = totals.seulCost - totals.covoitCost;
+  const costPct = totals.seulCost > 0 ? (costSaved / totals.seulCost * 100) : 0;
+  const kmSaved = totals.seulKm - totals.covoitKm;
+  const kmPct = totals.seulKm > 0 ? (kmSaved / totals.seulKm * 100) : 0;
+
+  const modeCount = {};
+  concernedRows.forEach(p => { modeCount[p.mode] = (modeCount[p.mode] || 0) + 1; });
+
+  return { nDrivers, nPassengers, nUnassigned, nCarPeople, carsAvoided, co2Saved, co2Pct, costSaved, costPct, kmSaved, kmPct, modeCount, totals };
+}
+
+// Bandeau de titre coloré, en haut de chaque page.
+function drawPageHeader(doc, title, subtitle, pageW, margin) {
+  doc.setFillColor(31, 41, 59);
+  doc.rect(0, 0, pageW, 16, 'F');
+  doc.setFontSize(13);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text(title, margin, 10.5);
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(200, 205, 215);
+  doc.text(subtitle, pageW - margin, 10.5, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+}
+
+// Paliers de compacité, du plus confortable au plus serré. À chaque palier correspondent
+// une police et un espacement pour la table principale ET pour le bilan — les deux se
+// resserrent ensemble, plutôt que de laisser l'un déborder pendant que l'autre reste large.
+const LAYOUT_LEVELS = [
+  { tableFs: 8, tableCp: 1.3, bilanFs: 8.3, bilanLineH: 5, modeFs: 7.5, modeCp: 1.4 },
+  { tableFs: 7, tableCp: 1.1, bilanFs: 7.6, bilanLineH: 4.6, modeFs: 7, modeCp: 1.2 },
+  { tableFs: 6, tableCp: 0.9, bilanFs: 6.8, bilanLineH: 4.1, modeFs: 6.2, modeCp: 1 },
+  { tableFs: 5.2, tableCp: 0.7, bilanFs: 6, bilanLineH: 3.6, modeFs: 5.5, modeCp: 0.8 },
+  { tableFs: 4.4, tableCp: 0.55, bilanFs: 5.3, bilanLineH: 3.1, modeFs: 4.8, modeCp: 0.6 }
+];
+function rowHeightFor(fontSize, cellPadding) { return fontSize * 0.42 + cellPadding * 2; }
+
+// Hauteur estimée de la section bilan à un palier donné (varie avec le nombre de modes).
+function estimateBilanHeight(nModes, level) {
+  const textBlock = 6 + (level.bilanLineH * 0.3) + level.bilanLineH * 5 + 2; // titre + 5 lignes + marge
+  const modeTable = (nModes + 1) * rowHeightFor(level.modeFs, level.modeCp);
+  return textBlock + modeTable + 4;
+}
+
+// Choisit le palier le plus confortable qui fait tenir la table ET le bilan dans l'espace
+// disponible ; si même le plus serré ne suffit pas (cas extrême), on le retourne quand même
+// plutôt que d'échouer — c'est le mieux qu'on puisse faire tenir.
+function chooseLayoutLevel(nRows, nModes, availableHeight) {
+  for (const level of LAYOUT_LEVELS) {
+    const tableH = (nRows + 2) * rowHeightFor(level.tableFs, level.tableCp);
+    const bilanH = estimateBilanHeight(nModes, level);
+    if (tableH + 8 + bilanH <= availableHeight) return level;
+  }
+  return LAYOUT_LEVELS[LAYOUT_LEVELS.length - 1];
+}
+
+function drawGroupBilan(doc, x, y, width, bilan, level) {
+  let cy = y + 6;
+  doc.setFontSize(10.5);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(31, 41, 59);
+  doc.text('Bilan de ce groupe', x, cy);
+  doc.setDrawColor(210, 214, 220);
+  doc.line(x, cy + 1.5, x + width, cy + 1.5);
+  doc.setFont(undefined, 'normal');
+  cy += level.bilanLineH * 1.3 + 2;
+
+  doc.setFontSize(level.bilanFs);
+  doc.setTextColor(55, 60, 70);
+  const lines = [
+    `${bilan.nCarPeople} personne(s) en voiture — ${bilan.nDrivers} conducteur·rice(s), ${bilan.nPassengers} passager·ère(s), ${bilan.nUnassigned} non intégré(e)(s).`,
+    `Véhicules évités : ${bilan.carsAvoided} (${bilan.nCarPeople} personne(s) en voiture ramenée(s) à ${bilan.nDrivers} véhicule(s) réellement utilisé(s)).`
+  ];
+  lines.forEach(l => { doc.text(l, x, cy); cy += level.bilanLineH; });
+
+  const metricLines = [
+    { label: 'CO2', v: fmtKg(bilan.totals.covoitCO2), s: fmtKg(bilan.totals.seulCO2), saved: fmtKg(bilan.co2Saved), pct: bilan.co2Pct },
+    { label: 'Coût', v: fmtEuro(bilan.totals.covoitCost), s: fmtEuro(bilan.totals.seulCost), saved: fmtEuro(bilan.costSaved), pct: bilan.costPct },
+    { label: 'Distance', v: fmtKm(bilan.totals.covoitKm), s: fmtKm(bilan.totals.seulKm), saved: fmtKm(bilan.kmSaved), pct: bilan.kmPct }
+  ];
+  metricLines.forEach(m => {
+    doc.setTextColor(55, 60, 70);
+    doc.text(`${m.label} : ${m.v} avec le covoiturage, contre ${m.s} si chacun roulait seul — soit `, x, cy);
+    const prefixW = doc.getTextWidth(`${m.label} : ${m.v} avec le covoiturage, contre ${m.s} si chacun roulait seul — soit `);
+    doc.setTextColor(22, 130, 90);
+    doc.setFont(undefined, 'bold');
+    doc.text(`${m.saved} évités (${m.pct.toFixed(0)} %)`, x + prefixW, cy);
+    doc.setFont(undefined, 'normal');
+    cy += level.bilanLineH;
+  });
+  cy += 2;
+
+  const modeRows = Object.entries(bilan.modeCount).sort((a, b) => b[1] - a[1])
+    .map(([mode, n]) => [mode, String(n), ((n / bilan.nCarPeople) * 100).toFixed(0) + ' %']);
+  const modeTableWidth = Math.min(width, 110);
+  doc.autoTable({
+    startY: cy,
+    margin: { left: x, right: doc.internal.pageSize.getWidth() - x - modeTableWidth },
+    tableWidth: modeTableWidth,
+    head: [['Mode de déplacement', 'Personnes', 'Part']],
+    body: modeRows,
+    styles: { fontSize: level.modeFs, cellPadding: level.modeCp },
+    headStyles: { fillColor: [70, 80, 100] }
+  });
+  return doc.lastAutoTable.finalY;
+}
+
+// Au-delà de ce nombre de personnes concernées, on renonce à tout faire tenir sur une seule
+// page : mieux vaut une police confortable et lisible, quitte à ce que le tableau s'étale sur
+// plusieurs pages, que de tasser au point de devenir illisible.
+const BILAN_INLINE_THRESHOLD = 15;
+
+// Construit la page (ou les pages) de données d'un groupe : tableau détaillé des personnes
+// concernées, puis bilan du groupe. En dessous du seuil, tente de tout faire tenir sur une
+// page (paliers de compacité). Au-dessus, garde une police confortable fixe et laisse le
+// tableau déborder sur autant de pages que nécessaire, avec l'en-tête stylée répétée sur
+// chacune ; le bilan est placé à la suite du tableau, sur une nouvelle page si besoin.
+function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan) {
+  const t = concerned.reduce((acc, p) => {
+    acc.seconds += p.seulSeconds; acc.km += p.seulKm; acc.co2 += p.seulCO2; acc.cost += p.seulCost;
+    return acc;
+  }, { seconds: 0, km: 0, co2: 0, cost: 0 });
+  const head = [['Nom', 'Rôle', 'Mode', 'Temps', 'Dist.', 'CO2', 'Coût', 'Covoiturage']];
+  const body = concerned.map(p => [p.nom, p.role, p.mode, fmtMin(p.seulSeconds), fmtKm(p.seulKm), fmtKg(p.seulCO2), fmtEuro(p.seulCost), p.covoitLabel]);
+  const foot = [['TOTAL', '', '', fmtMin(t.seconds), fmtKm(t.km), fmtKg(t.co2), fmtEuro(t.cost), '']];
+  const didParseCell = (data) => {
+    if (data.section === 'body') {
+      const c = MODE_COLORS[concerned[data.row.index].mode];
+      if (c) data.cell.styles.fillColor = c;
+    }
+  };
+  const nModes = Object.keys(bilan.modeCount).length;
+
+  if (concerned.length <= BILAN_INLINE_THRESHOLD) {
+    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+    const level = chooseLayoutLevel(concerned.length, nModes, pageH - contentTop - margin);
+    doc.autoTable({
+      startY: contentTop,
+      margin: { left: margin, right: margin },
+      head, body, foot,
+      styles: { fontSize: level.tableFs, cellPadding: level.tableCp, overflow: 'linebreak' },
+      headStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs },
+      footStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs, fontStyle: 'bold' },
+      didParseCell
+    });
+    drawGroupBilan(doc, margin, doc.lastAutoTable.finalY + 8, pageW - margin * 2, bilan, level);
+  } else {
+    const level = LAYOUT_LEVELS[0]; // groupe important : reste lisible, s'étale si besoin
+    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+    doc.autoTable({
+      startY: contentTop,
+      margin: { left: margin, right: margin, top: contentTop },
+      head, body, foot,
+      styles: { fontSize: level.tableFs, cellPadding: level.tableCp, overflow: 'linebreak' },
+      headStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs },
+      footStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs, fontStyle: 'bold' },
+      didParseCell,
+      didDrawPage: () => drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin)
+    });
+    const bilanH = estimateBilanHeight(nModes, level);
+    let bilanY = doc.lastAutoTable.finalY + 8;
+    if (bilanY + bilanH > pageH - margin) {
+      doc.addPage();
+      drawPageHeader(doc, `${groupTitle} — bilan`, dateStr, pageW, margin);
+      bilanY = contentTop;
+    }
+    drawGroupBilan(doc, margin, bilanY, pageW - margin * 2, bilan, level);
+  }
+}
+
+async function exportAsPdf(label) {
+  const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if (typeof jsPDFCtor !== 'function') throw new Error('jsPDF indisponible');
+  const doc = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  if (typeof doc.autoTable !== 'function') throw new Error('autoTable indisponible');
+
+  await new Promise(r => requestAnimationFrame(r)); // laisse Leaflet finir de peindre le canvas
+  const mapCanvas = await captureMapCanvas();
+  const mapImg = mapCanvas.toDataURL('image/png');
+
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 10;
+  const contentTop = 22;
+
+  // PAGE 1 — carte pleine page
+  drawPageHeader(doc, `Covoiturage L1 STAPS — ${exportTitle()}`, new Date().toLocaleString('fr-FR'), pageW, margin);
+  const availW = pageW - margin * 2;
+  const availH = pageH - contentTop - margin;
+  let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
+  if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
+  doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
+
+  // PAGE 2 — toutes les données (tableau détaillé + bilan du groupe)
+  doc.addPage();
+  const concerned = lastTraceData ? filterConcerned(lastTraceData.perPerson) : [];
+  const groupTitle = `Covoiturage L1 STAPS — ${exportTitle()}`;
+  const dateStr = new Date().toLocaleString('fr-FR');
+
+  if (lastTraceData && concerned.length) {
+    const bilan = computeGroupBilan(concerned, lastTraceData.concernedTotals);
+    buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan);
+  } else {
+    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+    doc.setFontSize(9);
+    doc.text("Aucun trajet tracé pour ce groupe.", margin, contentTop + 6);
+    doc.text('Cliquez sur "Tracer l\'itinéraire" avant d\'exporter pour obtenir le détail par personne.', margin, contentTop + 11);
+  }
+
+  doc.save(`covoiturage-${label}.pdf`);
+}
+
+async function exportAsPng(label) {
+  const toHide = captureControlsToHide();
+  toHide.forEach(el => el.classList.add('capture-hide'));
+
+  const tempDetail = document.createElement('div');
+  tempDetail.style.cssText = 'margin-top:10px; padding-top:10px; border-top:1px solid var(--line);';
+  const concernedForPng = lastTraceData ? filterConcerned(lastTraceData.perPerson) : [];
+  if (lastTraceData && concernedForPng.length) {
+    const t = concernedForPng.reduce((acc, p) => {
+      acc.seconds += p.seulSeconds; acc.km += p.seulKm; acc.co2 += p.seulCO2; acc.cost += p.seulCost;
+      return acc;
+    }, { seconds: 0, km: 0, co2: 0, cost: 0 });
+    const ct = lastTraceData.concernedTotals;
+    tempDetail.innerHTML = '<p class="section-label" style="margin:0 0 6px;">Détail par personne (seul)</p>' +
+      concernedForPng.map(p => `
+        <div style="font-size:0.68rem; padding:3px 4px; border-bottom:1px solid var(--line); background:${modeColorCss(p.mode)};">
+          <strong>${esc(p.nom)}</strong> — ${esc(p.role)}, ${esc(p.mode)}<br>
+          ${fmtMin(p.seulSeconds)} · ${fmtKm(p.seulKm)} · ${fmtKg(p.seulCO2)} · ${fmtEuro(p.seulCost)}
+        </div>`).join('') +
+      `<div style="font-size:0.7rem; font-weight:600; padding:6px 4px 0;">
+         TOTAL — ${fmtMin(t.seconds)} · ${fmtKm(t.km)} · ${fmtKg(t.co2)} · ${fmtEuro(t.cost)}<br>
+         Covoiturage réel — ${fmtKm(ct.covoitKm)} · ${fmtMin(ct.covoitSeconds)} · ${fmtKg(ct.covoitCO2)} · ${fmtEuro(ct.covoitCost)}
+       </div>`;
+  } else {
+    tempDetail.innerHTML = '<p class="hint">Aucun trajet tracé pour ce groupe.</p>';
+  }
+  document.getElementById('route-results').appendChild(tempDetail);
+
+  try {
+    await new Promise(r => requestAnimationFrame(r));
+    const canvas = await html2canvas(document.getElementById('app'), {
+      useCORS: true, backgroundColor: '#ffffff', scale: 2
+    });
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('toBlob a échoué');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `covoiturage-${label}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } finally {
+    tempDetail.remove();
+    toHide.forEach(el => el.classList.remove('capture-hide'));
+  }
+}
+
+// Bilan global — agrège tous les groupes déjà tracés (mémorisés dans savedTraceData).
+function computeGlobalSummary() {
+  let seulCO2 = 0, covoitCO2 = 0, seulCost = 0, covoitCost = 0, seulKm = 0, covoitKm = 0;
+  let nDrivers = 0, nPassengers = 0, nUnassigned = 0;
+  const modeCount = {};
+  const perGroup = [];
+
+  const groups = [...savedTraceData.keys()].sort((a, b) => {
+    const na = Number(a), nb = Number(b);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
+
+  groups.forEach(g => {
+    const saved = savedTraceData.get(g);
+    const concerned = filterConcerned(saved.perPerson);
+    let gSeulCO2 = 0, gDrivers = 0, gPeople = 0;
+    concerned.forEach(p => {
+      seulCO2 += p.seulCO2; seulCost += p.seulCost; seulKm += p.seulKm;
+      gSeulCO2 += p.seulCO2; gPeople++;
+      modeCount[p.mode] = (modeCount[p.mode] || 0) + 1;
+      if (p.role === 'Conducteur·rice') { nDrivers++; gDrivers++; }
+      else if (p.role.startsWith('Passager')) nPassengers++;
+      else if (p.role === 'Non intégré(e)') nUnassigned++;
+    });
+    covoitCO2 += saved.concernedTotals.covoitCO2; covoitCost += saved.concernedTotals.covoitCost; covoitKm += saved.concernedTotals.covoitKm;
+    perGroup.push({ groupe: g, nPeople: gPeople, nDrivers: gDrivers, seulCO2: gSeulCO2, covoitCO2: saved.concernedTotals.covoitCO2 });
+  });
+
+  const nCarPeople = nDrivers + nPassengers + nUnassigned; // toutes les personnes en voiture, covoiturées ou non
+  const carsAvoided = nCarPeople - nDrivers; // véhicules en moins par rapport à "chacun sa voiture"
+
+  return {
+    groups, nGroups: groups.length,
+    seulCO2, covoitCO2, seulCost, covoitCost, seulKm, covoitKm,
+    nDrivers, nPassengers, nUnassigned, nCarPeople, carsAvoided,
+    modeCount, perGroup
+  };
+}
+
+async function exportAllGroups() {
+  if (groupList.length === 0) {
+    alert("Aucune donnée chargée.");
+    return;
+  }
+  const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if (typeof jsPDFCtor !== 'function' ) {
+    alert("Export groupé indisponible (bibliothèque PDF non chargée). Exportez chaque groupe individuellement avec le bouton \"Exporter (PDF)\" à la place.");
+    return;
+  }
+  const doc = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  if (typeof doc.autoTable !== 'function') {
+    alert("Export groupé indisponible (bibliothèque de tableaux non chargée). Exportez chaque groupe individuellement à la place.");
+    return;
+  }
+
+  const proceed = await askYesNo(
+    `Cette action va tracer automatiquement les ${groupList.length} groupe(s), avec les cases actuellement cochées pour chacun, puis exporter le PDF complet.\n\n` +
+    `Ça peut prendre plusieurs minutes (calcul d'itinéraire réel pour chaque groupe). Continuer ?`
+  );
+  if (!proceed) return;
+
+  const btn = document.getElementById('export-all-btn');
+  const original = btn.textContent;
+  btn.disabled = true;
+
+  const originalGroup = selectedGroup, originalRouteResult = routeResult,
+        originalUnassigned = unassignedIds, originalLastTrace = lastTraceData;
+
+  try {
+    // ÉTAPE 1 — trace chaque groupe l'un après l'autre (mémorise le résultat dans
+    // savedTraceData, comme un clic manuel sur "Tracer l'itinéraire" le ferait).
+    for (let gi = 0; gi < groupList.length; gi++) {
+      const g = groupList[gi];
+      btn.textContent = `Traçage ${gi + 1}/${groupList.length}…`;
+      selectGroup(g);
+      await traceRoutes();
+    }
+
+    if (savedTraceData.size === 0) {
+      alert("Aucun groupe n'a pu être tracé (aucune voiture cochée dans aucun groupe ?). Export annulé.");
+      return;
+    }
+
+  const groups = [...savedTraceData.keys()].sort((a, b) => {
+    const na = Number(a), nb = Number(b);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
+
+    // ÉTAPE 2 — construit le PDF à partir des groupes tracés à l'étape précédente
+    // Page de bilan global, en tête du document
+    const s = computeGlobalSummary();
+    const margin0 = 12;
+    const pageW0 = doc.internal.pageSize.getWidth();
+    drawPageHeader(doc, 'Covoiturage L1 STAPS — Bilan global', `${new Date().toLocaleString('fr-FR')} — ${s.nGroups} groupe(s) tracé(s)`, pageW0, margin0);
+
+    const co2Saved = s.seulCO2 - s.covoitCO2;
+    const co2Pct = s.seulCO2 > 0 ? (co2Saved / s.seulCO2 * 100) : 0;
+    const costSaved = s.seulCost - s.covoitCost;
+    const costPct = s.seulCost > 0 ? (costSaved / s.seulCost * 100) : 0;
+    const kmSaved = s.seulKm - s.covoitKm;
+    const kmPct = s.seulKm > 0 ? (kmSaved / s.seulKm * 100) : 0;
+
+    doc.setFontSize(10);
+    const lines = [
+      `Personnes concernées par le covoiturage : ${s.nDrivers + s.nPassengers + s.nUnassigned} — ${s.nDrivers} conducteur·rices, ${s.nPassengers} passager·ères covoituré·es, ${s.nUnassigned} non intégré·es.`,
+      `Véhicules évités : ${s.carsAvoided} (${s.nCarPeople} personnes en voiture ramenées à ${s.nDrivers} véhicules réellement utilisés).`,
+      `CO2 : ${fmtKg(s.covoitCO2)} avec le covoiturage, contre ${fmtKg(s.seulCO2)} si chacun roulait seul — soit ${fmtKg(co2Saved)} évités (${co2Pct.toFixed(0)} %).`,
+      `Coût : ${fmtEuro(s.covoitCost)} avec le covoiturage, contre ${fmtEuro(s.seulCost)} si chacun roulait seul — soit ${fmtEuro(costSaved)} économisés (${costPct.toFixed(0)} %).`,
+      `Distance cumulée : ${fmtKm(s.covoitKm)} avec le covoiturage, contre ${fmtKm(s.seulKm)} si chacun roulait seul — soit ${fmtKm(kmSaved)} évités (${kmPct.toFixed(0)} %).`
+    ];
+    let y = 26;
+    lines.forEach(line => { doc.text(line, margin0, y); y += 6; });
+
+    const totalConcerned = s.perGroup.reduce((sum, g) => sum + g.nPeople, 0);
+    const modeRows = Object.entries(s.modeCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([mode, n]) => [mode, String(n), ((n / totalConcerned) * 100).toFixed(0) + ' %']);
+    doc.autoTable({
+      startY: y + 4,
+      margin: { left: margin0, right: pageW0 / 2 },
+      head: [['Mode de déplacement', 'Personnes', 'Part']],
+      body: modeRows,
+      styles: { fontSize: 7.5, cellPadding: 1.5 },
+      headStyles: { fillColor: [31, 41, 59] }
+    });
+
+    doc.autoTable({
+      startY: y + 4,
+      margin: { left: pageW0 / 2 + 4, right: margin0 },
+      head: [['Groupe', 'Personnes', 'Conduct.', 'CO2 seul', 'CO2 covoit.']],
+      body: s.perGroup.map(g => [String(g.groupe), String(g.nPeople), String(g.nDrivers), fmtKg(g.seulCO2), fmtKg(g.covoitCO2)]),
+      styles: { fontSize: 7.5, cellPadding: 1.5 },
+      headStyles: { fillColor: [31, 41, 59] }
+    });
+
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      btn.textContent = `Export ${gi + 1}/${groups.length}…`;
+      const saved = savedTraceData.get(g);
+      const concerned = filterConcerned(saved.perPerson);
+
+      selectedGroup = g;
+      memberState = saved.memberStateSnapshot;
+      routeResult = { colorByDriver: saved.colorByDriver, colorByPassenger: saved.colorByPassenger };
+      unassignedIds = saved.unassignedIds;
+      renderMarkers();
+      routeLayerGroup.clearLayers();
+      saved.driverGeometries.forEach(dg => {
+        L.geoJSON(dg.geometry, { style: { color: dg.color, weight: 4, opacity: 0.85, dashArray: dg.usedFallback ? '7,7' : null } }).addTo(routeLayerGroup);
+      });
+      await new Promise(r => requestAnimationFrame(r));
+
+      const mapCanvas = await captureMapCanvas();
+      const mapImg = mapCanvas.toDataURL('image/png');
+
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 10;
+      const contentTop = 22;
+      const groupTitle = `Covoiturage L1 STAPS — Groupe ${g} — arrivée : ${destinationLabelForGroup(g)}`;
+      const dateStr = new Date().toLocaleString('fr-FR');
+
+      // Page carte pleine page
+      doc.addPage();
+      drawPageHeader(doc, groupTitle, dateStr, pageW, margin);
+      const availW = pageW - margin * 2;
+      const availH = pageH - contentTop - margin;
+      let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
+      if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
+      doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
+
+      // Page données : tableau détaillé + bilan du groupe
+      doc.addPage();
+
+      if (concerned.length) {
+        const bilan = computeGroupBilan(concerned, saved.concernedTotals);
+        buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan);
+      } else {
+        drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+        doc.setFontSize(9);
+        doc.text('Aucune personne concernée par le covoiturage dans ce groupe.', margin, contentTop + 6);
+      }
+    }
+    doc.save('covoiturage-tous-groupes.pdf');
+  } catch (err) {
+    alert("L'export groupé a été interrompu par une erreur. Les groupes déjà traités n'ont pas été sauvegardés — réessayez.");
+  } finally {
+    selectedGroup = originalGroup;
+    routeResult = originalRouteResult;
+    unassignedIds = originalUnassigned;
+    lastTraceData = originalLastTrace;
+    routeLayerGroup.clearLayers();
+    const savedOriginal = originalGroup !== null ? savedTraceData.get(originalGroup) : null;
+    if (savedOriginal) {
+      savedOriginal.driverGeometries.forEach(dg => {
+        L.geoJSON(dg.geometry, { style: { color: dg.color, weight: 4, opacity: 0.85, dashArray: dg.usedFallback ? '7,7' : null } }).addTo(routeLayerGroup);
+      });
+    }
+    renderMarkers();
+    renderMemberList();
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+document.getElementById('export-all-btn').addEventListener('click', exportAllGroups);
+
+document.getElementById('capture-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('capture-btn');
+  const original = btn.textContent;
+  if (typeof html2canvas === 'undefined') {
+    alert("La bibliothèque de capture n'a pas pu être chargée (connexion au CDN indisponible).");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Export en cours…';
+  const label = selectedGroup === null ? 'vue-generale' : `groupe-${selectedGroup}`;
+
+  try {
+    await exportAsPdf(label);
+  } catch (pdfErr) {
+    try {
+      await exportAsPng(label);
+    } catch (pngErr) {
+      alert("L'export a échoué (PDF et PNG). Essayez un autre fond de carte (icône en haut à droite), ou une capture d'écran manuelle.");
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
+// Pour les personnes ayant renseigné deux adresses (adresse temporaire), choisit celle la
+// plus proche de leur destination (Nancy ou Épinal selon leur groupe) si l'option est
+// activée ; sinon utilise l'adresse retenue par défaut (celle indiquée par la colonne I).
+let useClosestAddress = false;
+// Mode "tout le monde" : pour le calcul d'itinéraire, ignore le mode de déplacement de
+// chacun·e — tout le monde devient candidat·e au covoiturage, seules les voitures
+// individuelles cochées restent des conductrices potentielles.
+let everyoneMode = false;
+function applyClosestAddressPreference() {
+  data.forEach(p => {
+    if (p.lat2 === undefined) return; // une seule adresse géolocalisée pour cette personne
+    if (useClosestAddress) {
+      const dest = destinationForGroup(p.groupe);
+      const d1 = haversine({ lat: p.latPrimary, lon: p.lonPrimary }, dest);
+      const d2 = haversine({ lat: p.lat2, lon: p.lon2 }, dest);
+      if (d2 < d1) {
+        p.lat = p.lat2; p.lon = p.lon2; p.adresse = p.adresse2; p.ville = p.ville2;
+        return;
+      }
+    }
+    p.lat = p.latPrimary; p.lon = p.lonPrimary; p.adresse = p.adressePrimary; p.ville = p.villePrimary;
+  });
+}
+
+function fitToData() {
+  const pts = data.map(d => [d.lat, d.lon]);
+  pts.push([DESTINATION_NANCY.lat, DESTINATION_NANCY.lon]);
+  pts.push([DESTINATION_EPINAL.lat, DESTINATION_EPINAL.lon]);
+  if (basinDestinationOverrides.nancy) pts.push([basinDestinationOverrides.nancy.lat, basinDestinationOverrides.nancy.lon]);
+  if (basinDestinationOverrides.epinal) pts.push([basinDestinationOverrides.epinal.lat, basinDestinationOverrides.epinal.lon]);
+  groupDestinationOverrides.forEach(o => pts.push([o.lat, o.lon]));
+  const bounds = L.latLngBounds(pts);
+  map.fitBounds(bounds, { padding: [30, 30] });
+}
+
+function initFromData() {
+  computeGroupList();
+  renderGroupButtons();
+  selectGroup(null);
+  fitToData();
+}
+
+// ------------------------------------------------------------------
+// GÉOCODAGE — Géoplateforme IGN (adresse texte -> lat/lon)
+// ------------------------------------------------------------------
+async function geocodeAddress(query, postcode) {
+  let url = `https://data.geopf.fr/geocodage/search/?q=${encodeURIComponent(query)}&limit=1`;
+  if (postcode) url += `&postcode=${encodeURIComponent(postcode)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const json = await res.json();
+  if (!json.features || !json.features.length) return null;
+  const f = json.features[0];
+  return {
+    lat: f.geometry.coordinates[1],
+    lon: f.geometry.coordinates[0],
+    score: f.properties ? f.properties.score : undefined,
+    label: f.properties ? f.properties.label : undefined
+  };
+}
+
+// Limite de débit partagée entre tous les workers : la concurrence à elle seule ne
+// suffit pas à respecter une limite globale si les réponses sont rapides (8 requêtes en
+// parallèle, chacune bouclant vite, peut largement dépasser 50 req/s sans ceci).
+function createRateGate(maxPerSecond) {
+  const minInterval = 1000 / maxPerSecond;
+  let nextTime = Date.now();
+  return async function acquire() {
+    const now = Date.now();
+    const wait = Math.max(0, nextTime - now);
+    nextTime = Math.max(now, nextTime) + minInterval;
+    if (wait > 0) await sleep(wait);
+  };
+}
+
+async function geocodeAddressWithRetry(query, postcode, gate) {
+  for (let attempt = 0; attempt <= GEOCODE_MAX_RETRIES; attempt++) {
+    await gate();
+    try {
+      return await geocodeAddress(query, postcode);
+    } catch (err) {
+      if (attempt === GEOCODE_MAX_RETRIES) return null;
+      await sleep(400 * (attempt + 1)); // repli progressif avant nouvelle tentative
+    }
+  }
+  return null;
+}
+
+async function geocodeBatch(rows, onProgress) {
+  let idx = 0, done = 0;
+  const results = new Array(rows.length);
+  const gate = createRateGate(GEOCODE_MAX_PER_SECOND);
+  async function worker() {
+    while (idx < rows.length) {
+      const i = idx++;
+      const r = rows[i];
+      results[i] = await geocodeAddressWithRetry(`${r.rue} ${r.ville}`.trim(), r.cp, gate);
+      done++;
+      onProgress(done, rows.length);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(GEOCODE_CONCURRENCY, rows.length) }, worker));
+  return results;
+}
+
+// ------------------------------------------------------------------
+// LECTURE DE FICHIER — xlsx (SheetJS) ou csv (PapaParse), en lignes brutes
+// ------------------------------------------------------------------
+function readXlsxRows(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' }));
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function readCsvRows(file) {
+  return new Promise((resolve, reject) => {
+    Papa.parse(file, { complete: (results) => resolve(results.data), error: reject });
+  });
+}
+
+// ------------------------------------------------------------------
+// IMPORT — structure exacte du formulaire Google Forms (export Sheets/xlsx) :
+// C=Nom, D=Prénom, E=Groupe, F/G/H=rue/CP/ville, I="adresse principale ?",
+// J/K/L=rue/CP/ville alternatives (utilisées si I = "Non (adresse temporaire)"),
+// M=mode de déplacement, N=places disponibles (conducteur).
+// Remplace les données par un fichier fourni par l'utilisateur, avec géocodage.
+// ------------------------------------------------------------------
+function regroupByGeography() {
+  if (data.length === 0) { alert('Aucune donnée chargée à regrouper.'); return; }
+
+  const nancyPeople = data.filter(d => !isEpinalGroup(d.groupe));
+  const epinalPeople = data.filter(d => isEpinalGroup(d.groupe));
+  if (nancyPeople.length === 0 && epinalPeople.length === 0) { alert('Aucune donnée à regrouper.'); return; }
+
+  const kNancy = Math.min(16, nancyPeople.length);
+  const kEpinal = Math.min(4, epinalPeople.length);
+  const nancyCarCount = nancyPeople.filter(hasCarCapability).length;
+  const epinalCarCount = epinalPeople.filter(hasCarCapability).length;
+
+  let msg = `Cette action va RECRÉER les groupes à partir de zéro, selon la proximité géographique des adresses actuellement chargées (${nancyPeople.length} personne(s) pour Nancy en ${kNancy} groupes, ${epinalPeople.length} pour Épinal en ${kEpinal} groupes). L'algorithme essaie de garantir au moins ${MIN_CAR_PER_GROUP} personne(s) en capacité de conduire par groupe. Tout paramétrage actuel par groupe (cases cochées, trajets tracés) sera perdu.`;
+  const warnings = [];
+  if (kNancy > 0 && nancyCarCount < MIN_CAR_PER_GROUP * kNancy) {
+    warnings.push(`Nancy : seulement ${nancyCarCount} personne(s) en capacité de conduire au total pour ${kNancy} groupes (il en faudrait ${MIN_CAR_PER_GROUP * kNancy} pour que chaque groupe atteigne ${MIN_CAR_PER_GROUP}) — au moins un groupe sera forcément en dessous.`);
+  }
+  if (kEpinal > 0 && epinalCarCount < MIN_CAR_PER_GROUP * kEpinal) {
+    warnings.push(`Épinal : seulement ${epinalCarCount} personne(s) en capacité de conduire au total pour ${kEpinal} groupes (il en faudrait ${MIN_CAR_PER_GROUP * kEpinal} pour que chaque groupe atteigne ${MIN_CAR_PER_GROUP}) — au moins un groupe sera forcément en dessous.`);
+  }
+  if (warnings.length) msg += `\n\n⚠️ ${warnings.join('\n⚠️ ')}`;
+  msg += '\n\nContinuer ?';
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById('regroup-btn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Recalcul en cours…';
+
+  // laisse le navigateur peindre le changement de bouton avant un calcul potentiellement long
+  setTimeout(() => {
+    try {
+      const reports = [];
+      const RESTARTS = 5;
+
+      if (nancyPeople.length > 0) {
+        const k = kNancy;
+        const targetSizes = computeTargetSizes(nancyPeople.length, k);
+        const result = clusterWithRestarts(nancyPeople, k, targetSizes, RESTARTS, MIN_CAR_PER_GROUP);
+        nancyPeople.forEach((p, i) => { p.groupe = String(result.assignments[i] + 1); });
+        const carCounts = new Array(k).fill(0);
+        nancyPeople.forEach((p, i) => { if (hasCarCapability(p)) carCounts[result.assignments[i]]++; });
+        const lines = targetSizes.map((size, i) =>
+          `groupe ${i + 1} : ${size} personne(s), ${carCounts[i]} conducteur·rice(s)${carCounts[i] < MIN_CAR_PER_GROUP ? ' ⚠️' : ''}`
+        );
+        reports.push(`Nancy — ${k} groupes :\n` + lines.join('\n'));
+      }
+      if (epinalPeople.length > 0) {
+        const k = kEpinal;
+        const targetSizes = computeTargetSizes(epinalPeople.length, k);
+        const result = clusterWithRestarts(epinalPeople, k, targetSizes, RESTARTS, MIN_CAR_PER_GROUP);
+        epinalPeople.forEach((p, i) => { p.groupe = String(16 + result.assignments[i] + 1); });
+        const carCounts = new Array(k).fill(0);
+        epinalPeople.forEach((p, i) => { if (hasCarCapability(p)) carCounts[result.assignments[i]]++; });
+        const lines = targetSizes.map((size, i) =>
+          `groupe ${17 + i} : ${size} personne(s), ${carCounts[i]} conducteur·rice(s)${carCounts[i] < MIN_CAR_PER_GROUP ? ' ⚠️' : ''}`
+        );
+        reports.push(`Épinal — ${k} groupes :\n` + lines.join('\n'));
+      }
+
+      // Les groupes eux-mêmes ont changé : tout paramétrage par groupe est obsolète.
+      memberState = new Map();
+      savedTraceData = new Map();
+      failedImportRows = [];
+      routeResult = null;
+      unassignedIds = new Set();
+      lastTraceData = null;
+      selectedGroup = null;
+      routeLayerGroup.clearLayers();
+      document.getElementById('route-results').innerHTML = '';
+      updateRetryButton();
+      initializeAllMemberStates();
+
+      initFromData();
+      alert('Nouveaux groupes créés à partir des adresses actuelles.\n\n' + reports.join('\n\n'));
+    } catch (err) {
+      alert('Erreur lors du recalcul des groupes : ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }, 50);
+}
+document.getElementById('regroup-btn').addEventListener('click', regroupByGeography);
+
+document.getElementById('csv-input').addEventListener('change', async function (e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  const subtitle = document.getElementById('subtitle');
+  const originalSubtitle = subtitle.textContent;
+
+  let rows;
+  try {
+    rows = (ext === 'xlsx' || ext === 'xls') ? await readXlsxRows(file) : await readCsvRows(file);
+  } catch (err) {
+    alert("Impossible de lire ce fichier. Formats acceptés : .xlsx ou .csv.");
+    return;
+  }
+
+  const dataRows = (rows || []).slice(1).filter(r => Array.isArray(r) && r.some(c => c !== undefined && c !== ''));
+  if (dataRows.length === 0) {
+    alert("Aucune ligne de données trouvée (le fichier ne contient peut-être que l'en-tête).");
+    return;
+  }
+
+  const cell = (r, i) => (r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
+  // Restriction sur les champs texte libre saisis par les répondant·es : les caractères
+  // < > sont retirés avant même d'entrer dans les données (en plus de l'échappement à
+  // l'affichage), pour éviter tout comportement imprévu si l'un d'eux apparaît par erreur.
+  let nSanitized = 0;
+  const cellClean = (r, i) => {
+    const raw = cell(r, i);
+    if (/[<>]/.test(raw)) nSanitized++;
+    return raw.replace(/[<>]/g, '');
+  };
+
+  let parsedRows = dataRows.map((r, i) => {
+    const useAlt = cell(r, 8) === 'Non (adresse temporaire)';
+    const placesN = parseInt(cell(r, 13), 10);
+    // rue2/cp2/ville2 : l'autre adresse (celle non retenue par défaut), quand la personne
+    // en a renseigné deux — sert uniquement si "adresse la plus proche" est activé.
+    const rue2 = useAlt ? cellClean(r, 5) : cellClean(r, 9);
+    const cp2 = useAlt ? cell(r, 6) : cell(r, 10);
+    const ville2 = useAlt ? cellClean(r, 7) : cellClean(r, 11);
+    return {
+      id: i + 1,
+      groupe: cell(r, 4) || 'N/A',
+      nom: (cellClean(r, 3) + ' ' + cellClean(r, 2)).trim() || `Membre ${i + 1}`,
+      rue: useAlt ? cellClean(r, 9) : cellClean(r, 5),
+      cp: useAlt ? cell(r, 10) : cell(r, 6),
+      ville: useAlt ? cellClean(r, 11) : cellClean(r, 7),
+      rue2, cp2, ville2, has2: !!(rue2 && ville2),
+      deplacement: cell(r, 12),
+      deplacementSecours: cell(r, 15),
+      situation: cell(r, 14),
+      places: Number.isFinite(placesN) && placesN > 0 ? placesN : undefined,
+      optIn: cell(r, 16)
+    };
+  }).filter(r => r.rue && r.ville);
+
+  if (parsedRows.length === 0) {
+    alert("Aucune ligne exploitable : colonnes rue (F) et ville (H) introuvables ou vides.");
+    return;
+  }
+
+  // Comparaison souple ("commence par Non") plutôt qu'égalité stricte : une réponse
+  // saisie ou exportée légèrement différemment du texte de référence reste détectée.
+  const isOptOut = (val) => !!val && val.trim().toLowerCase().startsWith('non');
+  const nOptOut = parsedRows.filter(r => isOptOut(r.optIn)).length;
+  if (nOptOut > 0) {
+    const exclude = await askYesNo(
+      `${nOptOut} personne(s) ont répondu ne pas vouloir de covoiturage (colonne Q, réponse commençant par "Non").\n\n` +
+      `Les exclure de la carte et de tous les calculs ?`
+    );
+    if (exclude) parsedRows = parsedRows.filter(r => !isOptOut(r.optIn));
+  }
+
+  // Dérive structurelle : si beaucoup de modes de déplacement sont inconnus, le formulaire
+  // a probablement changé (question déplacée, réponse reformulée...) — mieux vaut le
+  // signaler avant de continuer que de laisser les données se corrompre silencieusement.
+  const knownModes = Object.keys(TRANSPORT_ICONS);
+  const nUnknownMode = parsedRows.filter(r => r.deplacement && !knownModes.includes(r.deplacement)).length;
+  if (parsedRows.length > 0 && nUnknownMode / parsedRows.length > 0.3) {
+    const proceed = confirm(
+      `${nUnknownMode} ligne(s) sur ${parsedRows.length} ont un mode de déplacement non reconnu.\n\n` +
+      `Cela peut indiquer que la structure du formulaire a changé depuis la dernière fois ` +
+      `(question déplacée, réponse reformulée...).\n\n` +
+      `Continuer quand même l'import ?`
+    );
+    if (!proceed) { subtitle.textContent = originalSubtitle; return; }
+  }
+
+  // Doublons probables (même nom + même rue) et codes postaux mal formés — signalés,
+  // pas bloquants.
+  const seenKeys = new Map();
+  let nDuplicates = 0;
+  parsedRows.forEach(r => {
+    const key = (r.nom + '|' + r.rue).toLowerCase();
+    if (seenKeys.has(key)) nDuplicates++;
+    seenKeys.set(key, true);
+  });
+  const nBadPostal = parsedRows.filter(r => r.cp && !/^\d{5}$/.test(r.cp)).length;
+  const dataWarnings = [];
+  if (nSanitized > 0) dataWarnings.push(`${nSanitized} champ(s) contenaient les caractères < ou > (retirés automatiquement).`);
+  if (nDuplicates > 0) dataWarnings.push(`${nDuplicates} doublon(s) probable(s) (même nom et même rue) — une personne a peut-être répondu plusieurs fois.`);
+  if (nBadPostal > 0) dataWarnings.push(`${nBadPostal} code(s) postal(aux) ne ressemble(nt) pas à 5 chiffres — le géocodage pourrait être imprécis sur ces lignes.`);
+  if (dataWarnings.length) alert(dataWarnings.join('\n\n'));
+
+  // Tâches de géocodage : l'adresse retenue par défaut pour tout le monde, plus la seconde
+  // adresse pour les personnes qui en ont indiqué deux (sert au bouton "adresse la plus proche").
+  const geocodeTasks = [];
+  parsedRows.forEach(r => {
+    r._task1 = geocodeTasks.length;
+    geocodeTasks.push({ rue: r.rue, cp: r.cp, ville: r.ville });
+    if (r.has2) {
+      r._task2 = geocodeTasks.length;
+      geocodeTasks.push({ rue: r.rue2, cp: r.cp2, ville: r.ville2 });
+    }
+  });
+
+  subtitle.textContent = `Géocodage en cours : 0 / ${geocodeTasks.length}…`;
+  const geoResults = await geocodeBatch(geocodeTasks, (done, total) => {
+    subtitle.textContent = `Géocodage en cours : ${done} / ${total}…`;
+  });
+
+  const finalRows = [];
+  let failed = 0, lowConfidence = 0;
+  failedImportRows = [];
+  parsedRows.forEach(r => {
+    const g = geoResults[r._task1];
+    if (!g) { failed++; failedImportRows.push(r); return; }
+    if (typeof g.score === 'number' && g.score < GEOCODE_SCORE_THRESHOLD) lowConfidence++;
+
+    const row = {
+      id: r.id, groupe: r.groupe, nom: r.nom,
+      adresse: r.rue, ville: r.ville,
+      latPrimary: g.lat, lonPrimary: g.lon, adressePrimary: r.rue, villePrimary: r.ville,
+      lat: g.lat, lon: g.lon,
+      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
+      geocodeScore: (typeof g.score === 'number') ? g.score : undefined,
+      geocodeLabel: g.label
+    };
+    if (r.has2 && geoResults[r._task2]) {
+      const g2 = geoResults[r._task2];
+      row.lat2 = g2.lat; row.lon2 = g2.lon; row.adresse2 = r.rue2; row.ville2 = r.ville2;
+    }
+    finalRows.push(row);
+  });
+
+  if (finalRows.length === 0) {
+    alert("Aucune adresse n'a pu être géolocalisée (service de géocodage indisponible ou adresses non reconnues). Vérifiez la connexion, puis réessayez l'import.");
+    subtitle.textContent = originalSubtitle;
+    return;
+  }
+
+  updateRetryButton();
+  const warnings = [];
+  if (failed > 0) warnings.push(`${failed} adresse(s) non géolocalisée(s) (aucun résultat, malgré ${GEOCODE_MAX_RETRIES} nouvelle(s) tentative(s) automatique(s) par adresse). Un bouton "Réessayer les adresses non géolocalisées" est apparu pour ne relancer que celles-ci.`);
+  if (lowConfidence > 0) warnings.push(`${lowConfidence} adresse(s) géolocalisée(s) avec une confiance faible (contour orange sur la carte en vue générale) — à vérifier.`);
+  if (warnings.length) alert(warnings.join('\n'));
+
+  data = finalRows;
+  applyClosestAddressPreference();
+  duplicateGroups = detectDuplicates(data);
+  updateRetryButton();
+  initializeAllMemberStates();
+  subtitle.textContent = `${data.length} adresses géolocalisées.`;
+  initFromData();
+});
+
+document.getElementById('retry-geocode-btn').addEventListener('click', async () => {
+  if (failedImportRows.length === 0) return;
+  const btn = document.getElementById('retry-geocode-btn');
+  const rowsToRetry = failedImportRows;
+  btn.disabled = true;
+
+  const subtitle = document.getElementById('subtitle');
+  const originalSubtitle = subtitle.textContent;
+  subtitle.textContent = `Nouvel essai : 0 / ${rowsToRetry.length}…`;
+  const geoResults = await geocodeBatch(rowsToRetry, (done, total) => {
+    subtitle.textContent = `Nouvel essai : ${done} / ${total}…`;
+  });
+
+  const recovered = [];
+  const stillFailed = [];
+  let lowConfidence = 0;
+  rowsToRetry.forEach((r, i) => {
+    const g = geoResults[i];
+    if (!g) { stillFailed.push(r); return; }
+    if (typeof g.score === 'number' && g.score < GEOCODE_SCORE_THRESHOLD) lowConfidence++;
+    recovered.push({
+      id: r.id, groupe: r.groupe, nom: r.nom,
+      adresse: r.rue, ville: r.ville,
+      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
+      lat: g.lat, lon: g.lon,
+      geocodeScore: (typeof g.score === 'number') ? g.score : undefined,
+      geocodeLabel: g.label
+    });
+  });
+
+  failedImportRows = stillFailed;
+  data = data.concat(recovered);
+  duplicateGroups = detectDuplicates(data);
+  initializeAllMemberStates();
+  subtitle.textContent = `${data.length} adresses géolocalisées.`;
+  updateRetryButton();
+  initFromData();
+
+  const msg = [`${recovered.length} adresse(s) récupérée(s) sur ${rowsToRetry.length}.`];
+  if (stillFailed.length > 0) msg.push(`${stillFailed.length} restent non géolocalisées.`);
+  if (lowConfidence > 0) msg.push(`${lowConfidence} avec une confiance faible parmi les récupérées.`);
+  alert(msg.join(' '));
+  btn.disabled = false;
+});
+
+// Détecte les doublons probables (même nom + même adresse) dans une liste de personnes déjà
+// géolocalisées. "identical" : tous les champs pertinents concordent exactement — dans ce
+// cas, exclure l'un des deux ne fait perdre aucune information, un bouton unique suffit.
+// Sinon, les données diffèrent sur au moins un champ : les deux lignes sont montrées pour
+// comparaison, chacune avec son propre bouton d'exclusion (le choix revient à Valentin).
+function detectDuplicates(rows) {
+  const fieldsToCompare = ['nom', 'adresse', 'ville', 'deplacement', 'deplacementSecours', 'situation', 'places'];
+  const groups = new Map();
+  rows.forEach(r => {
+    const key = (String(r.nom || '') + '|' + String(r.adresse || '')).toLowerCase().trim();
+    if (!key || key === '|') return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  const result = [];
+  groups.forEach(groupRows => {
+    if (groupRows.length < 2) return;
+    const first = groupRows[0];
+    const identical = groupRows.every(r => fieldsToCompare.every(f => String(r[f] ?? '') === String(first[f] ?? '')));
+    result.push({ rows: groupRows, identical });
+  });
+  return result;
+}
+
+// Retire une personne de data (bouton "Exclure"), quelle que soit la raison (doublon,
+// confiance de géocodage faible...). Recalcule les doublons et invalide les trajets déjà
+// tracés, puisque la composition d'au moins un groupe a changé.
+function excludePerson(id) {
+  data = data.filter(d => d.id !== id);
+  duplicateGroups = detectDuplicates(data);
+  savedTraceData = new Map();
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+  initFromData();
+  updateRetryButton();
+  openFailedModal(); // rafraîchit le contenu de la modale déjà ouverte
+}
+
+// Adresses géolocalisées mais avec un score de confiance faible — pas un échec, mais à
+// vérifier manuellement (l'adresse trouvée n'est peut-être pas la bonne).
+function lowConfidenceRows() {
+  return data.filter(d => typeof d.geocodeScore === 'number' && d.geocodeScore < GEOCODE_SCORE_THRESHOLD);
+}
+
+function updateRetryButton() {
+  const btn = document.getElementById('retry-geocode-btn');
+  const viewBtn = document.getElementById('view-failed-btn');
+  const nFailed = failedImportRows.length;
+  const nDup = duplicateGroups.length;
+  const nLowConf = lowConfidenceRows().length;
+  if (nFailed > 0) {
+    btn.textContent = `Réessayer les adresses non géolocalisées (${nFailed})`;
+    btn.classList.remove('capture-hide-permanent');
+  } else {
+    btn.classList.add('capture-hide-permanent');
+  }
+  if (nFailed > 0 || nDup > 0 || nLowConf > 0) {
+    const parts = [];
+    if (nFailed > 0) parts.push(`${nFailed} échec(s)`);
+    if (nLowConf > 0) parts.push(`${nLowConf} confiance faible`);
+    if (nDup > 0) parts.push(`${nDup} doublon(s)`);
+    viewBtn.textContent = `Voir la liste (${parts.join(', ')})`;
+    viewBtn.classList.remove('capture-hide-permanent');
+  } else {
+    viewBtn.classList.add('capture-hide-permanent');
+    document.getElementById('failed-modal').classList.remove('visible');
+  }
+}
+
+function downloadFailedAsCsv() {
+  const headers = ['Nom', 'Groupe', 'Rue', 'Code Postal', 'Ville'];
+  const escCsv = v => `"${String(v || '').replace(/"/g, '""')}"`;
+  const lines = [headers.map(escCsv).join(';')];
+  failedImportRows.forEach(r => lines.push([r.nom, r.groupe, r.rue, r.cp, r.ville].map(escCsv).join(';')));
+  const csv = '\uFEFF' + lines.join('\r\n'); // BOM : accents corrects à l'ouverture dans Excel
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'adresses_non_geolocalisees.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Remplace confirm() quand les boutons doivent afficher "Oui" / "Non" précisément (le
+// navigateur ne permet pas de personnaliser les boutons de confirm() lui-même).
+let yesNoResolver = null;
+function askYesNo(message) {
+  return new Promise((resolve) => {
+    yesNoResolver = resolve;
+    document.getElementById('yesno-message').textContent = message;
+    document.getElementById('yesno-modal').classList.add('visible');
+    document.getElementById('yesno-yes').focus();
+  });
+}
+function resolveYesNo(result) {
+  if (!yesNoResolver) return;
+  document.getElementById('yesno-modal').classList.remove('visible');
+  const resolve = yesNoResolver;
+  yesNoResolver = null;
+  resolve(result);
+}
+document.getElementById('yesno-yes').addEventListener('click', () => resolveYesNo(true));
+document.getElementById('yesno-no').addEventListener('click', () => resolveYesNo(false));
+document.getElementById('yesno-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'yesno-modal') resolveYesNo(false);
+});
+
+function buildDuplicatesHTML() {
+  if (duplicateGroups.length === 0) return '<p class="hint">Aucun doublon détecté.</p>';
+  let html = `<p class="hint" style="margin:0 0 10px;">${duplicateGroups.length} groupe(s) de doublons probables (même nom et même adresse).</p>`;
+  duplicateGroups.forEach(g => {
+    if (g.identical) {
+      const r = g.rows[0];
+      html += `<div class="dup-group">
+        <p class="dup-group-title">${esc(r.nom)} — ${esc(r.adresse)}, ${esc(r.ville)} <span class="hint">(${g.rows.length} réponses identiques)</span></p>
+        <button class="retry-btn secondary" type="button" data-exclude-id="${g.rows[1].id}">Exclure le doublon</button>
+      </div>`;
+    } else {
+      html += `<div class="dup-group">
+        <p class="dup-group-title">${esc(g.rows[0].nom)} — doublon probable, données différentes :</p>
+        <table class="failed-table"><thead><tr><th>Adresse</th><th>Mode</th><th>Plan B</th><th>Situation</th><th>Places</th><th></th></tr></thead><tbody>` +
+        g.rows.map(r => `<tr><td>${esc(r.adresse)}, ${esc(r.ville)}</td><td>${esc(r.deplacement || '')}</td><td>${esc(r.deplacementSecours || '')}</td><td>${esc(r.situation || '')}</td><td>${r.places ?? ''}</td><td><button class="retry-btn secondary" type="button" data-exclude-id="${r.id}">Exclure celle-ci</button></td></tr>`).join('') +
+        `</tbody></table>
+      </div>`;
+    }
+  });
+  return html;
+}
+
+function buildLowConfidenceHTML() {
+  const rows = lowConfidenceRows();
+  if (rows.length === 0) return '<p class="hint">Aucune adresse à confiance faible.</p>';
+  let html = `<p class="hint" style="margin:0 0 10px;">${rows.length} adresse(s) géolocalisée(s) mais avec une confiance faible — le service a peut-être trouvé la mauvaise adresse. Comparez ce que vous avez saisi à ce qu'il a trouvé.</p>` +
+    `<table class="failed-table"><thead><tr><th>Nom</th><th>Groupe</th><th>Adresse saisie</th><th>Adresse trouvée</th><th>Confiance</th><th></th></tr></thead><tbody>` +
+    rows.map(r => `<tr><td>${esc(r.nom)}</td><td>${esc(r.groupe)}</td><td>${esc(r.adresse)}, ${esc(r.ville)}</td><td>${esc(r.geocodeLabel || '—')}</td><td>${Math.round(r.geocodeScore * 100)} %</td><td><button class="retry-btn secondary" type="button" data-exclude-id="${r.id}">Exclure</button></td></tr>`).join('') +
+    `</tbody></table>`;
+  return html;
+}
+
+function openFailedModal() {
+  const body = document.getElementById('failed-body');
+  let html = '<h3 class="modal-section-title">Adresses non géolocalisées</h3>';
+  if (failedImportRows.length === 0) {
+    html += '<p class="hint">Aucune adresse en échec pour l\'instant.</p>';
+  } else {
+    html +=
+      `<p class="hint" style="margin:0 0 10px;">${failedImportRows.length} adresse(s) n'ont pas pu être géolocalisées, même après nouvelles tentatives. Vérifiez-les (faute de frappe, adresse incomplète) avant de les resaisir dans le formulaire ou de réessayer.</p>` +
+      `<table class="failed-table"><thead><tr><th>Nom</th><th>Groupe</th><th>Adresse saisie</th></tr></thead><tbody>` +
+      failedImportRows.map(r => `<tr><td>${esc(r.nom)}</td><td>${esc(r.groupe)}</td><td>${esc(r.rue)}, ${esc(r.cp)} ${esc(r.ville)}</td></tr>`).join('') +
+      `</tbody></table>` +
+      `<button class="retry-btn secondary" id="failed-export-btn" type="button" style="margin-top:12px;">Télécharger en CSV</button>`;
+  }
+  html += '<h3 class="modal-section-title" style="margin-top:20px;">Adresses à confiance faible</h3>';
+  html += buildLowConfidenceHTML();
+  html += '<h3 class="modal-section-title" style="margin-top:20px;">Doublons probables</h3>';
+  html += buildDuplicatesHTML();
+  body.innerHTML = html;
+
+  if (failedImportRows.length > 0) {
+    document.getElementById('failed-export-btn').addEventListener('click', downloadFailedAsCsv);
+  }
+  document.querySelectorAll('#failed-body [data-exclude-id]').forEach(btn => {
+    btn.addEventListener('click', () => excludePerson(Number(btn.dataset.excludeId)));
+  });
+
+  document.getElementById('failed-modal').classList.add('visible');
+  document.getElementById('failed-close').focus();
+}
+function closeFailedModal() {
+  document.getElementById('failed-modal').classList.remove('visible');
+  document.getElementById('view-failed-btn').focus();
+}
+document.getElementById('view-failed-btn').addEventListener('click', openFailedModal);
+document.getElementById('failed-close').addEventListener('click', closeFailedModal);
+document.getElementById('failed-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'failed-modal') closeFailedModal();
+});
+
+// ------------------------------------------------------------------
+// HISTORIQUE DU PROJET — NE PAS SUPPRIMER CETTE INSTRUCTION.
+// Quiconque modifie ce fichier de façon substantielle (humain ou assistant IA sollicité
+// plus tard) doit ajouter une entrée courte ici décrivant la décision prise, à la suite
+// des entrées existantes, dans l'ordre chronologique, avec un thème (voir HISTORY_THEMES
+// ci-dessous ; en créer un nouveau si aucun thème existant ne convient).
+// ------------------------------------------------------------------
+const HISTORY_THEME_ORDER = [
+  "Données, import et géocodage",
+  "Algorithme de covoiturage",
+  "Groupes, destinations et proximité",
+  "Carte et fonds de carte",
+  "Export PDF / PNG",
+  "Interface et accessibilité",
+  "Tests et fiabilité",
+  "Décisions de cadrage du projet",
+];
+const PROJECT_HISTORY = [
+  { theme: "Données, import et géocodage", text: "Génération de 50 adresses fictives autour de Nancy (test) pour prototyper la carte et l'export Excel." },
+  { theme: "Carte et fonds de carte", text: "Passage à une carte HTML interactive autonome (plutôt que le widget intégré) pour permettre l'hébergement en ligne et l'usage en présentation." },
+  { theme: "Carte et fonds de carte", text: "Points de taille fixe en pixels (pas des pins) pour rester lisibles en dézoomant sur la vue générale." },
+  { theme: "Carte et fonds de carte", text: "Filtrage par groupe : le groupe sélectionné reste en couleur, les autres passent en gris clair pour garder le contexte géographique." },
+  { theme: "Carte et fonds de carte", text: "Fonds de carte OpenStreetMap officiels remplacés par OpenStreetMap France + un fond relief + un mode sombre (CSS), après échec des fonds initiaux (blocage/clé API requise)." },
+  { theme: "Algorithme de covoiturage", text: "Ajout du covoiturage : conducteurs et exclusions cochés manuellement, itinéraire réel par service de routage, destination unique fixe." },
+  { theme: "Algorithme de covoiturage", text: "Temps, CO2 et coût calculés pour chaque trajet, seul vs covoituré ; constantes sourcées (ADEME, barème kilométrique fiscal)." },
+  { theme: "Algorithme de covoiturage", text: "Algorithme de ramassage revu : insertion à coût minimal plafonnée à 15 min de détour (pas de gros retour en arrière), objectif CO2 plutôt que temps, capacité par conducteur (colonne dédiée du formulaire)." },
+  { theme: "Algorithme de covoiturage", text: "Amélioration locale (relocalisation de passagers) après la construction initiale, pour se rapprocher d'un meilleur résultat sans solveur externe." },
+  { theme: "Carte et fonds de carte", text: "Deux fonds de carte supplémentaires (épuré, minimal) pour faire ressortir les couleurs des groupes." },
+  { theme: "Export PDF / PNG", text: "Bouton de capture d'image de la carte, pour un usage PowerPoint ou en ligne." },
+  { theme: "Données, import et géocodage", text: "Import calé sur la structure exacte du formulaire réel (positions de colonnes), avec bascule vers l'adresse temporaire quand la colonne I l'indique." },
+  { theme: "Données, import et géocodage", text: "Géocodage automatique des adresses importées via le service de la Géoplateforme (l'ancienne API Adresse gouvernementale a été décommissionnée fin janvier 2026), avec seuil de confiance et signalement des adresses douteuses." },
+  { theme: "Interface et accessibilité", text: "Icônes de mode de transport par personne, avec bascule entre mode habituel et mode de secours (colonne P)." },
+  { theme: "Groupes, destinations et proximité", text: "Double destination : les groupes 17 à 20 partent vers la faculté des sports d'Épinal, tous les autres vers Nancy — résolu automatiquement selon le groupe." },
+  { theme: "Interface et accessibilité", text: "Correctifs : bouton de bascule de transport rendu visuellement identifiable." },
+  { theme: "Export PDF / PNG", text: "Capture recentrée sur la carte et les données de trajet uniquement." },
+  { theme: "Interface et accessibilité", text: "Cases cochées mémorisées par groupe (remplacé depuis par une mémorisation globale, voir plus bas)." },
+  { theme: "Algorithme de covoiturage", text: "Repli à vol d'oiseau si le service de routage tombe en panne." },
+  { theme: "Algorithme de covoiturage", text: "Refonte du calcul \"seul\" : seules les personnes en voiture sont candidates au ramassage ; chaque mode de transport (voiture, moto, bus, train, vélo électrique/trottinette, à pied) a son propre calcul de temps/CO2/coût/distance, avec un itinéraire réel séparé pour le vélo et la marche." },
+  { theme: "Décisions de cadrage du projet", text: "Audit complet du projet (21 points classés par sévérité) mené à la demande de Valentin." },
+  { theme: "Données, import et géocodage", text: "Intitulés de mode de transport corrigés avec le texte exact du vrai formulaire (plusieurs valeurs n'étaient pas reconnues), et ajout du mode \"covoiturage en tant que passager\"." },
+  { theme: "Export PDF / PNG", text: "Export enrichi : PDF si possible (image de la carte + tableau détaillé par personne), PNG en repli sinon." },
+  { theme: "Données, import et géocodage", text: "Filtre optionnel à l'import : proposition d'exclure les personnes ayant répondu ne pas vouloir de covoiturage (colonne Q), avec confirmation avant application." },
+  { theme: "Interface et accessibilité", text: "Ajout de ce panneau d'historique, tenu à jour à chaque nouvelle décision du projet." },
+  { theme: "Export PDF / PNG", text: "Correction du trajet absent/déformé dans les exports PDF/PNG : la carte utilise désormais un rendu canvas plutôt que SVG (limite connue de html2canvas avec les panneaux Leaflet)." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : le risque de dépendance à des services tiers gratuits (Leaflet, géocodage, routage, PDF) est accepté sans filet supplémentaire." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : le trafic et l'heure de la journée ne seront pas pris en compte dans les calculs de temps — complexité jugée disproportionnée par rapport au bénéfice." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : la conformité RGPD repose sur un paragraphe de consentement dans le formulaire (les données peuvent être utilisées par la faculté et en dehors pour proposer des améliorations de mobilité) — non exhaustive mais jugée suffisante vu les enjeux." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : le rendu mobile n'est pas une priorité, l'usage se fera sur ordinateur." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : la compatibilité avec d'anciens navigateurs est classée sans suite (postes récents, aucun incident constaté jusqu'ici)." },
+  { theme: "Algorithme de covoiturage", text: "Facteurs CO2/coût révisés mode par mode avec sources précisées (voiture et covoiturage passager : 170 g/km — changement notable depuis la version précédente, pour rester cohérent méthodologiquement avec les autres modes ; moto 95 g/km ; bus/tram 90 g/km ; train 25 g/km ; vélo électrique/trottinette 20 g/km)." },
+  { theme: "Export PDF / PNG", text: "Export PDF/PNG : passagers regroupés juste sous leur conducteur, indépendants triés par mode de déplacement, couleur de fond distincte par mode, ligne de totaux ajoutée." },
+  { theme: "Données, import et géocodage", text: "Validation ajoutée à l'import : détection d'une dérive de structure du formulaire (modes de déplacement non reconnus), de doublons probables (même nom et rue), et de codes postaux mal formés." },
+  { theme: "Données, import et géocodage", text: "Échappement systématique des données importées (nom, adresse) avant affichage, pour éviter tout affichage imprévisible si un champ contient des caractères inhabituels." },
+  { theme: "Algorithme de covoiturage", text: "Ajout d'un bouton par personne pour forcer son intégration au covoiturage malgré un mode de déplacement non-voiture (moto, bus, vélo, train, à pied)." },
+  { theme: "Interface et accessibilité", text: "Ajout d'un bouton de réinitialisation des cases cochées d'un groupe." },
+  { theme: "Données, import et géocodage", text: "Colonne O (stabilité de l'abonnement transport) intégrée : icône bus/train entourée en orange si la personne indique un usage temporaire ou exceptionnel plutôt qu'un abonnement." },
+  { theme: "Interface et accessibilité", text: "Fenêtre d'historique : fermeture au clavier (Échap), navigation au clavier maintenue à l'intérieur tant qu'elle est ouverte, focus restauré sur le bouton d'origine à la fermeture." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : le temps de géocodage à l'ouverture (jusqu'à ~1 min pour 400 personnes) est jugé négligeable, tout le reste du travail se faisant ensuite page ouverte sans nouveau géocodage." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : la taille du fichier et sa maintenabilité sont closes — projet terminé sous peu, croissance future non exponentielle attendue." },
+  { theme: "Données, import et géocodage", text: "Restriction ajoutée sur les champs texte libres importés (nom, rue, ville) : les caractères < et > sont retirés automatiquement, en plus de l'échappement à l'affichage." },
+  { theme: "Algorithme de covoiturage", text: "Algorithme de covoiturage : plusieurs essais randomisés (en plus de l'essai déterministe d'origine) sont maintenant comparés, le résultat de distance totale la plus faible est conservé — jamais pire que l'ancien comportement, parfois meilleur." },
+  { theme: "Export PDF / PNG", text: "Export groupé ajouté : un bouton exporte en un seul PDF tous les groupes déjà tracés (carte + détail par personne de chacun), à partir des données mémorisées lors de chaque calcul — pas de nouvel appel au service de routage." },
+  { theme: "Interface et accessibilité", text: "Accessibilité : statuts (sous-titre, statut de trajet) annoncés automatiquement aux lecteurs d'écran ; état des boutons à bascule (exclusion, forçage) exposé pour ces mêmes lecteurs." },
+  { theme: "Tests et fiabilité", text: "Fichier de tests séparé (tests_covoiturage.html) ajouté : vérifie automatiquement, à l'ouverture dans un navigateur, les fonctions clés (distances, éligibilité au ramassage, échappement, détection des refus de covoiturage, respect de la capacité et du détour maximal)." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : la diffusion des feuilles récapitulatives aux L1 passe par les L3 responsables du tournoi de la semaine, qui reçoivent la fiche de leur groupe et en assurent le relais." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : la collecte des adresses reste un instantané de début d'année (pas de collecte répétée en cours d'année) — les groupes sont fixes à l'année pour des raisons pédagogiques, une mise à jour des adresses ne pourrait de toute façon pas se traduire par un changement de groupe." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : le dispositif reste une mise en relation, sans engagement de responsabilité de l'organisateur en cas d'accident — position assumée après signalement du risque." },
+  { theme: "Décisions de cadrage du projet", text: "Décision : une semaine de sensibilisation permet aux membres de chaque groupe de se rencontrer avant le covoiturage effectif, répondant au besoin de confiance entre conducteur et passagers." },
+  { theme: "Export PDF / PNG", text: "Bilan global ajouté : page de synthèse en tête de l'export groupé (véhicules évités, CO2/coût/distance seul vs covoituré, répartition par mode, tableau comparatif par groupe)." },
+  { theme: "Algorithme de covoiturage", text: "Mode mauvais temps ajouté : un interrupteur global bascule automatiquement toutes les personnes normalement à pied vers leur Plan B (si utilisable), sans toucher aux autres modes ni aux bascules manuelles déjà faites. Invalide les trajets déjà tracés (potentiellement obsolètes)." },
+  { theme: "Données, import et géocodage", text: "Correctif géocodage important : sur un import réel de 515 adresses, 460 ont échoué. Diagnostic : la limitation de débit ne portait que sur la concurrence (8 requêtes en parallèle), pas sur le débit réel — des réponses rapides du service pouvaient largement dépasser sa limite documentée (~50/s), provoquant des rejets en cascade après les premières requêtes. Ajout d'une limite de débit globale explicite (8/s) partagée entre toutes les requêtes, de 2 nouvelles tentatives automatiques par adresse en cas d'échec, et d'un bouton pour ne réessayer que les adresses restées en échec sans réimporter tout le fichier." },
+  { theme: "Données, import et géocodage", text: "Ajout d'une liste consultable des adresses restées non géolocalisées (nom, groupe, adresse saisie), avec export CSV, pour permettre une vérification ou une relance manuelle des personnes concernées." },
+  { theme: "Données, import et géocodage", text: "Correction : mode de déplacement \"Vélo mécanique / Roller / Trottinette\" (distinct du vélo électrique) manquant, icône et profil ajoutés — vérifié qu'aucun autre mode réel n'était manquant sur un import de 515 réponses." },
+  { theme: "Données, import et géocodage", text: "Ajout d'un interrupteur \"adresse la plus proche\" : pour les personnes ayant renseigné deux adresses (adresse temporaire), permet de choisir automatiquement celle la plus proche de leur destination (Nancy pour les groupes 1-16, Épinal pour les 17-20) plutôt que l'adresse retenue par défaut. Les deux adresses sont désormais géolocalisées quand elles existent, pour permettre cette comparaison." },
+  { theme: "Algorithme de covoiturage", text: "Cases conducteur·rice cochées par défaut pour les personnes en voiture individuelle (le bouton Tracer est donc cliquable immédiatement), décochage/cochage manuel toujours possible avant de tracer." },
+  { theme: "Algorithme de covoiturage", text: "Changement algorithmique important : ajout d'une étape de consolidation par économies (algorithme de Clarke & Wright) avant l'insertion des candidats. Toutes les personnes cochées démarrent comme leur propre conductrice ; l'algorithme fusionne ensuite deux trajets dès que ça réduit la distance totale (pas juste \"ça rentre dans les 15 minutes\"), jusqu'à ce qu'aucune fusion ne soit plus avantageuse. Le nombre de conducteur·rices réel n'est donc plus fixé par les cases cochées une à une, mais déduit de ce qui minimise distance et CO2. Validé sur un scénario de bout en bout (12 cochés + 3 candidats non cochés → 3 conducteur·rices réel·les, personne non intégré·e, capacités respectées) exécuté via le vrai traceRoutes(), pas une reproduction isolée." },
+  { theme: "Algorithme de covoiturage", text: "Mode \"tout le monde\" ajouté : interrupteur qui fait de tout le monde (bus, vélo, à pied compris) un·e candidat·e au covoiturage, sans limiter aux modes habituellement éligibles. En ce mode, les voitures cochées ne sont volontairement PAS consolidées entre elles (contrairement au mode normal) pour garder un maximum de places disponibles face au grand nombre de candidat·es. Le nombre de places manquantes et les personnes concernées sont affichés explicitement quand tout le monde ne peut pas être casé. Validé de bout en bout (24 personnes, 4 voitures × 3 places → 12 casées, 8 signalées nommément) ainsi que la bascule propre entre les deux modes." },
+  { theme: "Groupes, destinations et proximité", text: "Recréation des groupes par proximité géographique ajoutée (bouton dédié, pensé pour préparer l'année prochaine) : reconstruit les 16 groupes Nancy et 4 groupes Épinal à partir des adresses actuellement chargées, par un k-means à tailles équilibrées (Nancy et Épinal ne se mélangent jamais). Confirmation demandée avant d'écraser les groupes existants ; tailles réellement atteintes rapportées, avec avertissement explicite si la fourchette 28-31 est hors d'atteinte pour la population chargée. Validé de bout en bout sur 600 puis 200 personnes (tailles exactes, aucune personne perdue, aucun mélange Nancy/Épinal, état remis à zéro, rapport affiché)." },
+  { theme: "Interface et accessibilité", text: "La question d'exclusion des personnes ayant répondu \"Non\" au covoiturage (colonne Q, à l'import) affiche maintenant une boîte avec exactement les boutons \"Oui\" / \"Non\", à la place de la boîte de confirmation du navigateur (dont les boutons \"OK\"/\"Annuler\" ne peuvent pas être personnalisés). Cette nouvelle boîte gère aussi Échap et le clic à l'extérieur (équivalents à \"Non\")." },
+  { theme: "Interface et accessibilité", text: "Le tableau Temps/Distance/CO2/Coût affiché à l'écran après un tracé ne porte désormais que sur les personnes concernées par cet itinéraire (voitures cochées + candidat·es au ramassage), plus les indépendant·es qui gonflaient les totaux sans rapport avec la décision de covoiturage." },
+  { theme: "Export PDF / PNG", text: "L'export PDF, lui, garde volontairement la vue complète du groupe (décision explicite, pour ne pas changer ce qui fonctionnait déjà bien)." },
+  { theme: "Export PDF / PNG", text: "Sur la page de bilan global de l'export groupé : la ligne Coût affiche maintenant son pourcentage d'évolution (comme la ligne CO2), et la ligne Distance cumulée a été reformulée sur le même modèle explicite (\"X avec le covoiturage, contre Y si chacun roulait seul — soit Z évités (P %)\"), avec son propre pourcentage ajouté." },
+  { theme: "Export PDF / PNG", text: "Dans le détail par personne du PDF (export individuel et groupé), le libellé \"Absorbé dans le trajet du conducteur\" (personnes fusionnées lors de la consolidation) précise maintenant le nom du conducteur concerné, comme le fait déjà la colonne Rôle." },
+  { theme: "Données, import et géocodage", text: "La fenêtre \"Voir la liste\" (adresses non géolocalisées) affiche maintenant aussi les doublons probables (même nom et même adresse). Quand les données des deux réponses sont identiques, un bouton unique exclut l'une des deux. Quand elles diffèrent sur un point (mode de transport, plan B...), les réponses sont montrées côte à côte avec un bouton d'exclusion chacune, pour laisser le choix plutôt que de deviner laquelle est la bonne." },
+  { theme: "Algorithme de covoiturage", text: "Bug corrigé : le bouton \"↺ réinitialiser le groupe\" décochait tout le monde sans exception, y compris les voitures individuelles — il ne suivait pas la même règle par défaut que l'ouverture d'un groupe. C'est probablement ce qui expliquait des groupes où les voitures individuelles n'étaient pas cochées. Corrigé pour suivre exactement la même règle ; validé que l'ouverture fraîche d'un groupe, la préservation d'un décochage manuel en changeant de groupe, et le bouton réinitialiser se comportent tous correctement." },
+  { theme: "Export PDF / PNG", text: "Refonte du PDF (export individuel et groupé) : carte 1,5x plus grande (200mm au lieu de 133,5mm), en-tête stylée (bandeau coloré) sur chaque page. Décision révisée par rapport à l'entrée précédente : le PDF se resserre maintenant lui aussi aux personnes concernées par le covoiturage (conducteur·rices, passager·ères, non intégré·es) — les indépendant·es n'apparaissent plus du tout dans le PDF, ni dans le détail par personne ni dans les totaux. Colonne \"Covoiturage\" retirée du tableau (redondante avec le rôle et le nouveau bilan) pour dégager la place nécessaire à la carte agrandie. Chaque page de groupe (export individuel ou groupé) affiche maintenant une section \"Bilan de ce groupe\" — mêmes chiffres que le bilan global (véhicules évités, CO2/coût/distance avec pourcentages, répartition des modes) mais recalculés pour ce groupe précis. Validé de bout en bout avec un simulateur qui vérifie qu'aucun élément ne déborde de la page, sur un export à 2 groupes (3 pages : résumé + 2 groupes)." },
+  { theme: "Export PDF / PNG", text: "Mise en page PDF revue une nouvelle fois : la carte occupe maintenant une page entière (au lieu d'être partagée avec le tableau), et toutes les données (tableau détaillé + bilan du groupe, colonne \"Covoiturage\" réintégrée puisque la place ne manque plus) sont sur la page suivante. Pour que ça tienne systématiquement sans déborder sur une 3e page, la taille de police du tableau ET du bilan est choisie ensemble parmi 5 paliers de compacité (du plus confortable au plus serré), le palier le moins compact qui fait tout tenir étant retenu. Un premier test avec un pire cas (30 personnes, 6 modes de déplacement différents, mode \"tout le monde\") a révélé que compacter seulement le tableau ne suffisait pas — le bilan devait aussi se resserrer ; corrigé. Validé sur ce pire cas (2 pages, aucun débordement), sur un cas typique (police confortable conservée, rien de compacté inutilement), et sur l'export groupé à 2 groupes (exactement 5 pages : résumé + carte/données x 2 groupes, sans page vierge)." },
+  { theme: "Export PDF / PNG", text: "Assoupli : au-delà de 15 personnes concernées par le covoiturage dans un groupe, l'outil renonce à tout faire tenir sur une seule page de données et privilégie la lisibilité — police confortable fixe, le tableau s'étale sur autant de pages que nécessaire, avec l'en-tête stylée répétée sur chacune, et le bilan du groupe placé à la suite (sur une nouvelle page si besoin). En dessous de 15, le comportement précédent (tout compacter pour tenir sur une page) est inchangé. Validé sur un cas à 15 personnes (reste sur une page) et un cas à 30 personnes en mode \"tout le monde\" (s'étale sur 3 pages, police confortable conservée, en-tête présente sur chacune, aucun débordement)." },
+  { theme: "Carte et fonds de carte", text: "Bug corrigé : les fonds de carte \"Sombre\", \"Épuré\" et \"Minimal\" sont en réalité les mêmes tuiles OpenStreetMap que le fond couleur, avec un simple filtre CSS appliqué par-dessus (inversion, niveaux de gris...). La bibliothèque de capture d'écran ne sait pas reproduire les filtres CSS, donc l'export utilisait toujours l'image sans filtre — visuellement de l'OSM classique, quel que soit le fond choisi à l'écran (\"Relief\" et \"Satellite\", de vraies tuiles différentes, n'étaient pas concernés). Corrigé en réappliquant manuellement le même filtre sur l'image déjà capturée, via l'API Canvas standard. Le contrôle de zoom (+/-, en haut à gauche de la carte) est également masqué pendant la capture puis restauré juste après, pour l'export PDF comme pour le PNG de secours. Validé que le filtre exact correspondant au fond actif est bien réappliqué (et aucun filtre pour les fonds qui n'en ont pas), et que le zoom est bien masqué puis restauré." },
+  { theme: "Groupes, destinations et proximité", text: "Bug corrigé : la destination Nancy/Épinal se déterminait par correspondance exacte du numéro de groupe (\"17\"), ce qui échouait dès que le libellé contenait autre chose (\"17 (Épinal)\") — les groupes 17 à 20 arrivaient alors par erreur à Nancy. Détection rendue robuste (numéro de tête OU mention explicite d'Épinal dans le nom du groupe), appliquée partout où c'était nécessaire." },
+  { theme: "Algorithme de covoiturage", text: "Pré-cochage par défaut élargi : les personnes en \"Covoiturage en tant que Conducteur / Conductrice\" sont désormais cochées d'office comme les voitures individuelles (les deux ont réellement un véhicule). Les personnes en \"Covoiturage en tant que Passager / Passagère\" restent volontairement non cochées : bien qu'affichées avec la même icône voiture, elles n'ont justement pas de véhicule propre à proposer comme conducteur·rice — les cocher aurait faussé le calcul." },
+  { theme: "Interface et accessibilité", text: "Changement d'architecture important : les cases cochées (conducteur·rice, exclu·e, etc.) sont maintenant mémorisées globalement pour toutes les personnes de tous les groupes à la fois, et non plus réinitialisées à chaque changement de groupe. L'ancien système de sauvegarde par groupe est supprimé, devenu inutile. Toutes les voitures individuelles et covoiturage-conducteur sont cochées dès le chargement des données, pour tous les groupes, sans attendre qu'on les ouvre un par un." },
+  { theme: "Export PDF / PNG", text: "\"Exporter tous les groupes tracés\" trace maintenant automatiquement chaque groupe (avec les cases actuellement cochées) avant de construire le PDF, au lieu d'exiger de tracer chaque groupe à la main au préalable. Une confirmation est demandée avant de lancer, l'opération pouvant prendre plusieurs minutes sur un grand nombre de groupes." },
+  { theme: "Carte et fonds de carte", text: "Deux nouveaux filtres ajoutés sous \"Vue générale\" : \"Étudiant Nancy\" (groupes 1 à 16 uniquement) et \"Étudiant Épinal\" (groupes 17 à 20 uniquement), pour n'afficher sur la carte que les étudiant·es concerné·es par l'un ou l'autre campus. Les cinq changements de ce tour ont été validés ensemble dans un seul scénario de bout en bout (détection Épinal, pré-cochage différencié voiture individuelle/covoiturage conducteur/covoiturage passager, mémoire globale conservée à travers un changement de groupe ET de filtre, filtres Nancy/Épinal avec le bon nombre de personnes affichées, export groupé traçant automatiquement plusieurs groupes)." },
+  { theme: "Interface et accessibilité", text: "Icônes des trois modes voiture distinguées (elles partageaient toutes 🚗) : \"Covoiturage en tant que Conducteur / Conductrice\" garde la voiture avec une étoile ajoutée (🚗⭐), \"Covoiturage en tant que Passager / Passagère\" devient un bonhomme à côté d'une voiture (🧍🚗) pour marquer l'absence de véhicule propre. \"Voiture individuelle\" inchangée (🚗 seule)." },
+  { theme: "Groupes, destinations et proximité", text: "Destination temporaire ajoutée : depuis le panneau d'un groupe, un bloc \"📍 Destination temporaire\" permet de saisir une adresse qui remplace la faculté habituelle (Nancy ou Épinal) pour les calculs d'itinéraire, avec un choix de portée — ce groupe uniquement, ou tout le bassin auquel il appartient (nancéien ou spinalien) en une fois. Un réglage propre à un groupe prime toujours sur un réglage de bassin. Un bouton \"Revenir à la destination normale\" permet d'annuler à tout moment (pensé comme momentané, pas une redéfinition permanente). Tout trajet déjà tracé pour un groupe concerné par un changement de destination est invalidé. Validé de bout en bout : réglage par groupe, réglage par bassin, priorité du groupe sur le bassin, effet réel sur le calcul d'itinéraire (destination utilisée dans le trajet tracé), et retour à la normale après effacement." },
+  { theme: "Données, import et géocodage", text: "La fenêtre \"Voir la liste\" (rebaptisée \"Adresses à vérifier et doublons\") affiche maintenant une troisième section pour les adresses géolocalisées avec une confiance faible (déjà signalées par un contour orange sur la carte, mais jusqu'ici invisibles ailleurs) : nom, adresse saisie, adresse trouvée par le service et pourcentage de confiance, avec un bouton Exclure par ligne. La fonction d'exclusion (jusque-là nommée d'après les doublons) a été généralisée pour servir aux trois sections. Validé de bout en bout : détection, affichage avec le bon pourcentage, et exclusion réelle d'une adresse à confiance faible." },
+  { theme: "Carte et fonds de carte", text: "Bug corrigé (effet de bord du correctif précédent sur les fonds filtrés) : réappliquer le filtre CSS sur l'image entière capturée désaturait aussi les tracés colorés, alors qu'à l'écran le filtre ne s'applique qu'aux tuiles (particulièrement visible avec \"Minimal\", qui contient un passage en niveaux de gris — les trajets ressortaient en noir et blanc). Corrigé en capturant tuiles et tracés/marqueurs séparément (masquage temporaire de l'un puis de l'autre via les classes Leaflet standard), en n'appliquant le filtre qu'à la capture des tuiles, puis en recomposant les deux — tuiles filtrées en fond, tracés et marqueurs par-dessus sans filtre supplémentaire. Un repli vers l'ancien comportement (filtre global) est conservé si jamais la structure DOM de Leaflet ne correspondait pas à ce qui est attendu. Validé : deux captures distinctes pour un fond filtré (tuiles seules à fond blanc, puis tracés seuls à fond transparent), une seule capture pour un fond sans filtre, et recomposition finale qui ne réapplique aucun filtre sur les tracés." },
+  { theme: "Carte et fonds de carte", text: "Changement de fond, plus radical cette fois : les trois fonds \"Sombre\", \"Épuré\" et \"Minimal\" (qui étaient les mêmes tuiles OSM avec un filtre CSS, source des deux bugs précédents) sont remplacés par deux vraies sources de tuiles distinctes chez Esri (même fournisseur, gratuit et sans clé, que \"Satellite\") : \"Clair (épuré)\" (World_Light_Gray_Base) et \"Sombre\" (World_Dark_Gray_Base), fusionnant Épuré/Minimal en une seule option claire. Plus aucun fond n'utilise de filtre CSS : toute la logique de capture séparée tuiles/tracés et de recomposition ajoutée dans l'entrée précédente devient inutile et a été retirée — captureMapCanvas() revient à une simple capture unique pour tous les fonds. Avant d'intégrer ce changement, vérifié que le service Esri répond bien en direct sans clé (le service CARTO envisagé initialement comme alternative a justement commencé à exiger une clé d'API fin août, d'où la prudence)." },
+  { theme: "Carte et fonds de carte", text: "Deux ajustements sur les fonds de carte, suite à un retour direct après le changement précédent : (1) \"Relief\" (tile.openmaps.fr, service associatif gratuit) affichait un filigrane intégré dans les tuiles elles-mêmes (pas contournable côté code) — remplacé par \"World_Topo_Map\", même famille Esri fiable et sans clé que Satellite, qui inclut nativement villes/routes/relief sans aucun filigrane. (2) Les fonds \"Clair\", \"Sombre\" et \"Satellite\" sont des fonds volontairement dépourvus de labels chez Esri (pensés comme fonds neutres pour y poser ses propres données) — chacun devient un groupe de deux calques superposés : le fond d'origine, plus son calque \"Reference\" compagnon (villes, routes, frontières) qui vient s'afficher par-dessus. Validé : Relief est redevenu une source unique (World_Topo_Map, sans mention d'openmaps.fr), les trois autres sont bien des groupes de deux couches avec les bonnes URLs (base + reference/limites), et la capture PDF reste un simple appel unique (pas de régression vers la double capture)." },
+  { theme: "Carte et fonds de carte", text: "Sixième fond de carte ajouté : \"Rues (Esri)\" (World_Street_Map), un style rue coloré alternatif à OpenStreetMap couleur, même famille Esri fiable, labels inclus nativement. Vérifié en direct que le service répond sans clé avant de l'intégrer." },
+  { theme: "Interface et accessibilité", text: "Corrigé aussi un défaut d'alignement repéré sur le bouton \"Vue générale\" : il héritait d'un texte aligné à gauche (text-align: left) alors que tous les autres boutons du fichier sont centrés — corrigé pour rester cohérent avec le reste de l'interface." },
+  { theme: "Groupes, destinations et proximité", text: "Deux changements sur \"Recréer les groupes par proximité\". (1) Le rapport final n'affiche plus un simple avertissement conditionnel (fourchette 28-31) : il liste maintenant, pour chaque groupe créé, le nombre de personnes et le nombre de conducteur·rices potentiel·les. (2) Nouvelle contrainte lors de la création des groupes : l'algorithme essaie de garantir au moins MIN_CAR_PER_GROUP (constante ajustable, valeur actuelle : 3) personnes en capacité de conduire par groupe — voiture individuelle ou covoiturage conducteur, en mode principal OU de secours — via une première passe d'affectation prioritaire (par proximité aussi) avant de compléter le reste normalement. Si la population totale ne compte pas assez de conducteur·rices potentiel·les pour que TOUS les groupes atteignent ce minimum, un avertissement chiffré apparaît dans la boîte de confirmation avant de lancer l'opération, et les groupes concernés sont marqués ⚠️ dans le rapport final — sans jamais laisser quiconque sans groupe ni déséquilibrer les tailles. Validé : sans contrainte la géographie prime seule (comportement inchangé) ; avec juste assez de conducteur·rices disponibles, le minimum est atteint dans TOUS les groupes ; en cas de pénurie, l'algorithme fait au mieux sans jamais planter ni oublier personne ; le message de confirmation prévient correctement en cas d'insuffisance chiffrée." },
+];
+
+function openHistoryModal() {
+  const grouped = new Map();
+  PROJECT_HISTORY.forEach(h => {
+    if (!grouped.has(h.theme)) grouped.set(h.theme, []);
+    grouped.get(h.theme).push(h.text);
+  });
+  const sectionsHtml = HISTORY_THEME_ORDER
+    .filter(theme => grouped.has(theme))
+    .map(theme => {
+      const items = grouped.get(theme);
+      const list = items.map(t => `<li>${t}</li>`).join('');
+      const count = items.length + (items.length > 1 ? ' entrées' : ' entrée');
+      return `<details class="history-theme"><summary>${theme}<span class="history-count">${count}</span></summary><div class="history-theme-body"><ol>${list}</ol></div></details>`;
+    }).join('');
+  document.getElementById('history-body').innerHTML = sectionsHtml;
+  document.getElementById('history-modal').classList.add('visible');
+  document.getElementById('history-close').focus();
+}
+function closeHistoryModal() {
+  document.getElementById('history-modal').classList.remove('visible');
+  document.getElementById('history-btn').focus();
+}
+document.getElementById('history-btn').addEventListener('click', openHistoryModal);
+document.getElementById('history-close').addEventListener('click', closeHistoryModal);
+document.getElementById('history-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'history-modal') closeHistoryModal();
+});
+document.addEventListener('keydown', (e) => {
+  const modal = [...document.querySelectorAll('.modal-overlay.visible')][0];
+  if (!modal) return;
+  if (e.key === 'Escape') {
+    if (modal.id === 'history-modal') closeHistoryModal();
+    else if (modal.id === 'failed-modal') closeFailedModal();
+    else if (modal.id === 'yesno-modal') resolveYesNo(false);
+    return;
+  }
+  if (e.key === 'Tab') {
+    const focusables = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
+initializeAllMemberStates();
+initFromData();
+</script>
+</body>
+</html>

@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<title>Tests — Covoiturage L1 STAPS</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 720px; margin: 30px auto; padding: 0 16px; color: #1f2430; }
+  h1 { font-size: 1.2rem; }
+  .hint { font-size: 0.85rem; color: #5b6472; margin-bottom: 20px; line-height: 1.5; }
+  .test { padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; font-size: 0.85rem; border: 1px solid #e2e5ea; }
+  .pass { background: #f0fdf4; border-color: #bbf7d0; }
+  .fail { background: #fef2f2; border-color: #fecaca; }
+  .test strong { display: inline-block; width: 46px; }
+  .pass strong { color: #16a34a; }
+  .fail strong { color: #dc2626; }
+  #summary { font-weight: 600; margin-top: 16px; padding: 10px; border-radius: 6px; }
+  #summary.ok { background: #f0fdf4; color: #16a34a; }
+  #summary.ko { background: #fef2f2; color: #dc2626; }
+</style>
+</head>
+<body>
+<h1>Tests — cœur logique de l'outil de covoiturage</h1>
+<p class="hint">
+  Ouvrez ce fichier directement dans un navigateur pour lancer les tests — aucune installation requise.
+  Ces fonctions sont <strong>dupliquées</strong> depuis <code>carte_groupes_nancy.html</code> (pas de système de
+  modules dans ce projet) : si vous modifiez la logique correspondante là-bas, pensez à répercuter le
+  changement ici, sinon ces tests deviendront trompeurs plutôt qu'utiles.
+</p>
+<div id="results"></div>
+<div id="summary"></div>
+
+<script>
+// ------------------------------------------------------------------
+// Fonctions testées, dupliquées depuis carte_groupes_nancy.html
+// ------------------------------------------------------------------
+function haversine(a, b) {
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+  const la1 = a.lat * Math.PI / 180, la2 = b.lat * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function isPickupEligible(mode) {
+  return mode === "Voiture individuelle (seul(e))"
+      || mode === "Covoiturage en tant que Conducteur / Conductrice"
+      || mode === "Covoiturage en tant que Passager / Passagère";
+}
+
+const TRANSPORT_PROFILES = {
+  "Voiture individuelle (seul(e))": { emission: 170, cost: 0.636, kind: 'driving' },
+  "Covoiturage en tant que Conducteur / Conductrice": { emission: 170, cost: 0.636, kind: 'driving' },
+  "Covoiturage en tant que Passager / Passagère": { emission: 170, cost: 0.636, kind: 'driving' },
+  "Moto / Scooter / Deux-roues motorisé": { emission: 95, cost: 0.35, kind: 'driving' },
+  "Bus/Tram": { emission: 90, cost: 0, kind: 'driving', speedKmh: 20 },
+  "Train": { emission: 25, cost: 0, kind: 'driving', speedKmh: 40 },
+  "Vélo électrique / Trottinette électrique": { emission: 20, cost: 0, kind: 'cycling' },
+  "À pied": { emission: 0, cost: 0, kind: 'foot' }
+};
+function profileFor(mode) {
+  return TRANSPORT_PROFILES[mode] || TRANSPORT_PROFILES["Voiture individuelle (seul(e))"];
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function isOptOut(val) { return !!val && val.trim().toLowerCase().startsWith('non'); }
+
+// Consolidation par économies (Clarke & Wright) — décide combien de personnes cochées
+// finissent réellement conductrices, forme isolée
+function runSavingsConsolidation(nDrivers, destIdx, capacities, T, D, MAX_DETOUR_SECONDS) {
+  const routes = new Map(), loads = new Map(), solo = new Set();
+  for (let i = 0; i < nDrivers; i++) { routes.set(i, [i, destIdx]); loads.set(i, 0); solo.add(i); }
+  function bestInsertion(route, candidateIdx) {
+    let best = { pos: -1, cost: Infinity };
+    for (let k = 0; k < route.length - 1; k++) {
+      const a = route[k], b = route[k + 1];
+      const timeCost = T[a][candidateIdx] + T[candidateIdx][b] - T[a][b];
+      if (timeCost > MAX_DETOUR_SECONDS) continue;
+      const distCost = D[a][candidateIdx] + D[candidateIdx][b] - D[a][b];
+      if (distCost < best.cost) best = { pos: k + 1, cost: distCost };
+    }
+    return best;
+  }
+  let improved = true;
+  while (improved) {
+    improved = false;
+    let best = null;
+    for (const driverIdx of routes.keys()) {
+      if (loads.get(driverIdx) >= capacities[driverIdx]) continue;
+      for (const passengerIdx of solo) {
+        if (passengerIdx === driverIdx) continue;
+        const ins = bestInsertion(routes.get(driverIdx), passengerIdx);
+        if (ins.pos === -1) continue;
+        const netSaving = D[passengerIdx][destIdx] - ins.cost;
+        if (netSaving > 1e-6 && (best === null || netSaving > best.netSaving)) {
+          best = { driverIdx, passengerIdx, insertPos: ins.pos, netSaving };
+        }
+      }
+    }
+    if (best === null) break;
+    routes.get(best.driverIdx).splice(best.insertPos, 0, best.passengerIdx);
+    loads.set(best.driverIdx, loads.get(best.driverIdx) + 1);
+    solo.delete(best.passengerIdx); solo.delete(best.driverIdx);
+    routes.delete(best.passengerIdx); loads.delete(best.passengerIdx);
+    improved = true;
+  }
+  return { routes, loads };
+}
+
+// Algorithme de ramassage (construction + amélioration locale), forme isolée
+function bestInsertion(route, candidateIdx, T, D, MAX_DETOUR_SECONDS) {
+  let best = { pos: -1, cost: Infinity };
+  for (let k = 0; k < route.length - 1; k++) {
+    const a = route[k], b = route[k + 1];
+    const timeCost = T[a][candidateIdx] + T[candidateIdx][b] - T[a][b];
+    if (timeCost > MAX_DETOUR_SECONDS) continue;
+    const distCost = D[a][candidateIdx] + D[candidateIdx][b] - D[a][b];
+    if (distCost < best.cost) best = { pos: k + 1, cost: distCost };
+  }
+  return best;
+}
+function runConstruction(drivers, candidates, destIdx, capacities, T, D, MAX_DETOUR_SECONDS, randomize) {
+  const routes = drivers.map((d, i) => [i, destIdx]);
+  const routeLoads = drivers.map(() => 0);
+  const remaining = candidates.map((c, i) => drivers.length + i);
+  while (remaining.length) {
+    const options = [];
+    for (let di = 0; di < routes.length; di++) {
+      if (routeLoads[di] >= capacities[di]) continue;
+      for (let ci = 0; ci < remaining.length; ci++) {
+        const ins = bestInsertion(routes[di], remaining[ci], T, D, MAX_DETOUR_SECONDS);
+        if (ins.pos === -1) continue;
+        options.push({ driverIdx: di, candPos: ci, insertPos: ins.pos, cost: ins.cost });
+      }
+    }
+    if (options.length === 0) break;
+    options.sort((a, b) => a.cost - b.cost);
+    const choice = (randomize && options.length > 1) ? options[Math.floor(Math.random() * Math.min(3, options.length))] : options[0];
+    const candIdx = remaining.splice(choice.candPos, 1)[0];
+    routes[choice.driverIdx].splice(choice.insertPos, 0, candIdx);
+    routeLoads[choice.driverIdx]++;
+  }
+  return { routes, routeLoads, remaining };
+}
+
+// ------------------------------------------------------------------
+// Petit framework d'assertions
+// ------------------------------------------------------------------
+const results = [];
+function test(name, fn) {
+  try {
+    fn();
+    results.push({ name, pass: true });
+  } catch (err) {
+    results.push({ name, pass: false, error: err.message });
+  }
+}
+function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion échouée'); }
+function assertClose(a, b, tol, msg) { assert(Math.abs(a - b) <= tol, msg || `${a} ≈ ${b} attendu`); }
+
+// ------------------------------------------------------------------
+// Tests
+// ------------------------------------------------------------------
+test('haversine : distance nulle entre un point et lui-même', () => {
+  assertClose(haversine({ lat: 48.69, lon: 6.18 }, { lat: 48.69, lon: 6.18 }), 0, 0.001);
+});
+test('haversine : Nancy → Épinal ≈ 55-65 km à vol d\'oiseau', () => {
+  const d = haversine({ lat: 48.6921, lon: 6.1844 }, { lat: 48.1843, lon: 6.4549 });
+  assert(d > 55 && d < 65, `distance obtenue : ${d.toFixed(1)} km`);
+});
+
+test('isPickupEligible : voiture individuelle est éligible', () => {
+  assert(isPickupEligible('Voiture individuelle (seul(e))') === true);
+});
+test('isPickupEligible : covoiturage passager est éligible', () => {
+  assert(isPickupEligible('Covoiturage en tant que Passager / Passagère') === true);
+});
+test('isPickupEligible : moto n\'est PAS éligible', () => {
+  assert(isPickupEligible('Moto / Scooter / Deux-roues motorisé') === false);
+});
+test('isPickupEligible : bus n\'est PAS éligible', () => {
+  assert(isPickupEligible('Bus/Tram') === false);
+});
+
+test('profileFor : mode connu renvoie le bon profil', () => {
+  assert(profileFor('Train').emission === 25);
+});
+test('profileFor : mode inconnu se replie sur le profil voiture', () => {
+  assert(profileFor('Mode totalement inconnu').emission === 170);
+});
+test('profileFor : à pied a un coût et une émission nuls', () => {
+  assert(profileFor('À pied').emission === 0 && profileFor('À pied').cost === 0);
+});
+
+test('esc : neutralise les caractères HTML sensibles', () => {
+  assert(esc('<img src=x onerror=alert(1)>') === '&lt;img src=x onerror=alert(1)&gt;');
+});
+test('esc : ne modifie pas un texte normal', () => {
+  assert(esc('Jean Dupont') === 'Jean Dupont');
+});
+test('esc : gère les valeurs vides/nulles sans erreur', () => {
+  assert(esc(null) === '' && esc(undefined) === '' && esc('') === '');
+});
+
+test('isOptOut : détecte "Non" (réponse courte)', () => {
+  assert(isOptOut('Non') === true);
+});
+test('isOptOut : détecte le texte complet réel du formulaire', () => {
+  assert(isOptOut('Non, mon mode de transport actuel me convient très bien') === true);
+});
+test('isOptOut : ne détecte pas une réponse positive', () => {
+  assert(isOptOut('Oui') === false);
+});
+
+test('algorithme : la capacité d\'un conducteur n\'est jamais dépassée', () => {
+  const n = 5; // 0=conducteur, 1..3=candidats, 4=dest
+  const pos = { 0: 0, 1: 0.1, 2: 0.2, 3: 0.3, 4: 10 };
+  const T = [], D = [];
+  for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const d = Math.abs(pos[i] - pos[j]); T[i][j] = d * 60; D[i][j] = d * 1000; } }
+  const { routeLoads } = runConstruction([{}], [{}, {}, {}], 4, [2], T, D, 15 * 60, false);
+  assert(routeLoads[0] <= 2, `charge obtenue : ${routeLoads[0]}, capacité : 2`);
+});
+test('algorithme : un candidat trop loin (détour > 15 min) reste non intégré', () => {
+  const n = 3; // 0=conducteur, 1=candidat très loin, 2=dest
+  const pos = { 0: 0, 1: 100, 2: 1 };
+  const T = [], D = [];
+  for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const d = Math.abs(pos[i] - pos[j]); T[i][j] = d * 60; D[i][j] = d * 1000; } }
+  const { remaining } = runConstruction([{}], [{}], 2, [4], T, D, 15 * 60, false);
+  assert(remaining.length === 1, 'le candidat éloigné aurait dû rester non intégré');
+});
+test('algorithme : aucune boucle infinie sur un cas normal (10 candidats, 2 conducteurs)', () => {
+  const n = 13;
+  const pos = {}; pos[0] = [0, 0]; pos[1] = [10, 0]; pos[12] = [5, 5];
+  for (let i = 2; i < 12; i++) pos[i] = [Math.random() * 10, Math.random() * 10];
+  const T = [], D = [];
+  for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1]; const km = Math.sqrt(dx * dx + dy * dy); D[i][j] = km * 1000; T[i][j] = km * 60; } }
+  const start = Date.now();
+  runConstruction([{}, {}], Array.from({ length: 10 }, () => ({})), 12, [6, 6], T, D, 15 * 60, false);
+  assert(Date.now() - start < 1000, 'le calcul ne doit pas dépasser 1 seconde sur ce cas');
+});
+
+test('consolidation : réduit le nombre de conducteurs quand un regroupement est avantageux', () => {
+  // 6 personnes toutes proches les unes des autres, capacité 4 chacune : doit consolider
+  const n = 7; // 0..5 = personnes cochées, 6 = destination
+  const pos = { 0: [0, 0], 1: [0.1, 0], 2: [0.2, 0], 3: [0.1, 0.1], 4: [0, 0.2], 5: [0.2, 0.2], 6: [0, 5] };
+  const T = [], D = [];
+  for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1]; const km = Math.sqrt(dx * dx + dy * dy); D[i][j] = km * 1000; T[i][j] = km * 60; } }
+  const capacities = [4, 4, 4, 4, 4, 4];
+  const result = runSavingsConsolidation(6, 6, capacities, T, D, 15 * 60);
+  assert(result.routes.size < 6, `attendu moins de 6 conducteur·rices après consolidation, obtenu ${result.routes.size}`);
+});
+
+test('consolidation : ne dépasse jamais la capacité de chaque conducteur', () => {
+  const n = 9;
+  const pos = {}; for (let i = 0; i < 8; i++) pos[i] = [Math.random() * 0.3, Math.random() * 0.3];
+  pos[8] = [0, 5];
+  const T = [], D = [];
+  for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1]; const km = Math.sqrt(dx * dx + dy * dy); D[i][j] = km * 1000; T[i][j] = km * 60; } }
+  const capacities = Array.from({ length: 8 }, () => 3);
+  const result = runSavingsConsolidation(8, 8, capacities, T, D, 15 * 60);
+  let capOk = true;
+  result.loads.forEach((load, idx) => { if (load > capacities[idx]) capOk = false; });
+  assert(capOk, 'une capacité a été dépassée après consolidation');
+});
+
+test('consolidation : personne n\'est perdu ni dupliqué', () => {
+  const n = 8;
+  const pos = {}; for (let i = 0; i < 7; i++) pos[i] = [Math.random() * 2, Math.random() * 2];
+  pos[7] = [0, 8];
+  const T = [], D = [];
+  for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1]; const km = Math.sqrt(dx * dx + dy * dy); D[i][j] = km * 1000; T[i][j] = km * 60; } }
+  const capacities = Array.from({ length: 7 }, () => 4);
+  const result = runSavingsConsolidation(7, 7, capacities, T, D, 15 * 60);
+  const seen = new Set();
+  result.routes.forEach(route => route.slice(0, -1).forEach(idx => seen.add(idx)));
+  assert(seen.size === 7, `attendu 7 personnes présentes exactement une fois, obtenu ${seen.size}`);
+});
+
+// ------------------------------------------------------------------
+// Affichage
+// ------------------------------------------------------------------
+const container = document.getElementById('results');
+results.forEach(r => {
+  const div = document.createElement('div');
+  div.className = 'test ' + (r.pass ? 'pass' : 'fail');
+  div.innerHTML = `<strong>${r.pass ? 'OK' : 'ÉCHEC'}</strong> ${esc(r.name)}` + (r.error ? `<br><span style="color:#dc2626;">${esc(r.error)}</span>` : '');
+  container.appendChild(div);
+});
+const nPass = results.filter(r => r.pass).length;
+const summary = document.getElementById('summary');
+summary.className = nPass === results.length ? 'ok' : 'ko';
+summary.textContent = `${nPass} / ${results.length} tests réussis`;
+</script>
+</body>
+</html>
