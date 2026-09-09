@@ -169,6 +169,66 @@ function detectDuplicates(rows) {
   return result;
 }
 
+// Construction des lignes exploitables et des lignes finales géolocalisées — dupliquées
+// depuis carte_groupes_nancy.html (extraites de handleCsvImport le 9 sept).
+const GEOCODE_SCORE_THRESHOLD = 0.5; // en dessous : adresse à vérifier manuellement
+function parseImportRows(dataRows, colMap) {
+  const cell = (r, i) => (i !== undefined && r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
+  let nSanitized = 0;
+  const cellClean = (r, i) => {
+    const raw = cell(r, i);
+    if (/[<>]/.test(raw)) nSanitized++;
+    return raw.replace(/[<>]/g, '');
+  };
+  const parsedRows = dataRows.map((r, i) => {
+    const useAlt = colMap.adressePrincipale !== undefined && cell(r, colMap.adressePrincipale) === 'Non (adresse temporaire)';
+    const placesN = parseInt(cell(r, colMap.places), 10);
+    const rue2 = useAlt ? cellClean(r, colMap.rue1) : cellClean(r, colMap.rue2);
+    const cp2 = useAlt ? cell(r, colMap.cp1) : cell(r, colMap.cp2);
+    const ville2 = useAlt ? cellClean(r, colMap.ville1) : cellClean(r, colMap.ville2);
+    return {
+      id: i + 1,
+      groupe: cellClean(r, colMap.groupe) || 'N/A',
+      nom: (cellClean(r, colMap.prenom) + ' ' + cellClean(r, colMap.nom)).trim() || `Membre ${i + 1}`,
+      rue: useAlt ? cellClean(r, colMap.rue2) : cellClean(r, colMap.rue1),
+      cp: useAlt ? cell(r, colMap.cp2) : cell(r, colMap.cp1),
+      ville: useAlt ? cellClean(r, colMap.ville2) : cellClean(r, colMap.ville1),
+      rue2, cp2, ville2, has2: !!(rue2 && ville2),
+      deplacement: cell(r, colMap.deplacement),
+      deplacementSecours: cell(r, colMap.deplacementSecours),
+      situation: cell(r, colMap.situation),
+      places: Number.isFinite(placesN) && placesN > 0 ? placesN : undefined,
+      optIn: cell(r, colMap.optIn)
+    };
+  }).filter(r => r.rue && r.ville);
+  return { parsedRows, nSanitized };
+}
+function buildFinalRows(parsedRows, geoResults) {
+  const finalRows = [];
+  const failedRows = [];
+  let failed = 0, lowConfidence = 0;
+  parsedRows.forEach(r => {
+    const g = geoResults[r._task1];
+    if (!g) { failed++; failedRows.push(r); return; }
+    if (typeof g.score === 'number' && g.score < GEOCODE_SCORE_THRESHOLD) lowConfidence++;
+    const row = {
+      id: r.id, groupe: r.groupe, nom: r.nom,
+      adresse: r.rue, ville: r.ville,
+      latPrimary: g.lat, lonPrimary: g.lon, adressePrimary: r.rue, villePrimary: r.ville,
+      lat: g.lat, lon: g.lon,
+      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
+      geocodeScore: (typeof g.score === 'number') ? g.score : undefined,
+      geocodeLabel: g.label
+    };
+    if (r.has2 && geoResults[r._task2]) {
+      const g2 = geoResults[r._task2];
+      row.lat2 = g2.lat; row.lon2 = g2.lon; row.adresse2 = r.rue2; row.ville2 = r.ville2;
+    }
+    finalRows.push(row);
+  });
+  return { finalRows, failedRows, failed, lowConfidence };
+}
+
 // Pipeline de géocodage (réseau) — dupliqué depuis carte_groupes_nancy.html, avec un mock
 // de fetch ci-dessous pour tester sans appel réseau réel.
 function createRateGate(maxPerSecond) {
@@ -313,10 +373,10 @@ function bestInsertion(route, candidateIdx, T, D, MAX_DETOUR_SECONDS) {
   }
   return best;
 }
-function runConstruction(drivers, candidates, destIdx, capacities, T, D, MAX_DETOUR_SECONDS, randomize) {
-  const routes = drivers.map((d, i) => [i, destIdx]);
-  const routeLoads = drivers.map(() => 0);
-  const remaining = candidates.map((c, i) => drivers.length + i);
+function insertPickupCandidates(baseRoutes, baseLoads, candidateIndices, capacities, T, D, MAX_DETOUR_SECONDS, randomize) {
+  const routes = baseRoutes.map(r => [...r]);
+  const routeLoads = [...baseLoads];
+  const remaining = [...candidateIndices];
   while (remaining.length) {
     const options = [];
     for (let di = 0; di < routes.length; di++) {
@@ -481,7 +541,7 @@ test('algorithme : la capacité d\'un conducteur n\'est jamais dépassée', () =
   const pos = { 0: 0, 1: 0.1, 2: 0.2, 3: 0.3, 4: 10 };
   const T = [], D = [];
   for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const d = Math.abs(pos[i] - pos[j]); T[i][j] = d * 60; D[i][j] = d * 1000; } }
-  const { routeLoads } = runConstruction([{}], [{}, {}, {}], 4, [2], T, D, 15 * 60, false);
+  const { routeLoads } = insertPickupCandidates([[0, 4]], [0], [1, 2, 3], [2], T, D, 15 * 60, false);
   assert(routeLoads[0] <= 2, `charge obtenue : ${routeLoads[0]}, capacité : 2`);
 });
 test('algorithme : un candidat trop loin (détour > 15 min) reste non intégré', () => {
@@ -489,7 +549,7 @@ test('algorithme : un candidat trop loin (détour > 15 min) reste non intégré'
   const pos = { 0: 0, 1: 100, 2: 1 };
   const T = [], D = [];
   for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const d = Math.abs(pos[i] - pos[j]); T[i][j] = d * 60; D[i][j] = d * 1000; } }
-  const { remaining } = runConstruction([{}], [{}], 2, [4], T, D, 15 * 60, false);
+  const { remaining } = insertPickupCandidates([[0, 2]], [0], [1], [4], T, D, 15 * 60, false);
   assert(remaining.length === 1, 'le candidat éloigné aurait dû rester non intégré');
 });
 test('algorithme : aucune boucle infinie sur un cas normal (10 candidats, 2 conducteurs)', () => {
@@ -499,7 +559,7 @@ test('algorithme : aucune boucle infinie sur un cas normal (10 candidats, 2 cond
   const T = [], D = [];
   for (let i = 0; i < n; i++) { T.push([]); D.push([]); for (let j = 0; j < n; j++) { const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1]; const km = Math.sqrt(dx * dx + dy * dy); D[i][j] = km * 1000; T[i][j] = km * 60; } }
   const start = Date.now();
-  runConstruction([{}, {}], Array.from({ length: 10 }, () => ({})), 12, [6, 6], T, D, 15 * 60, false);
+  insertPickupCandidates([[0, 12], [1, 12]], [0, 0], Array.from({ length: 10 }, (_, i) => 2 + i), [6, 6], T, D, 15 * 60, false);
   assert(Date.now() - start < 1000, 'le calcul ne doit pas dépasser 1 seconde sur ce cas');
 });
 
@@ -620,6 +680,40 @@ test('bouton "Réessayer" : une adresse toujours introuvable reste en échec san
   const row = { id: 2, nom: 'Bob Introuvable', rue: '99 Rue Inconnue', cp: '', ville: 'Nulle Part', has2: false };
   const { recovered, stillFailed } = await simulateRetryGeocode([row]);
   assert(recovered.length === 0 && stillFailed.length === 1, 'doit rester en échec, sans lever d\'erreur');
+});
+
+test('parseImportRows : adresse temporaire (colonne "Non") bascule sur la seconde adresse', () => {
+  const colMap = { nom: 0, prenom: 1, groupe: 2, rue1: 3, cp1: 4, ville1: 5, adressePrincipale: 6, rue2: 7, cp2: 8, ville2: 9, deplacement: 10 };
+  const dataRows = [
+    ['Martin', 'Alice', '5', '20 Rue B', '54000', 'Nancy', 'Non (adresse temporaire)', '5 Rue C', '88000', 'Épinal', 'À pied']
+  ];
+  const { parsedRows } = parseImportRows(dataRows, colMap);
+  assert(parsedRows[0].nom === 'Alice Martin', 'prénom + nom concaténés');
+  assert(parsedRows[0].rue === '5 Rue C' && parsedRows[0].ville === 'Épinal', 'adresse temporaire utilisée');
+  assert(parsedRows[0].rue2 === '20 Rue B' && parsedRows[0].has2 === true, 'ancienne adresse conservée comme secondaire');
+});
+
+test('parseImportRows : retire < et > des champs texte et compte les occurrences', () => {
+  const colMap = { nom: 0, prenom: 1, groupe: 2, rue1: 3, cp1: 4, ville1: 5, deplacement: 6 };
+  const dataRows = [['Dupont', 'Jean <b>', '5', '10 Rue A', '54000', 'Nancy', 'À pied']];
+  const { parsedRows, nSanitized } = parseImportRows(dataRows, colMap);
+  assert(parsedRows[0].nom === 'Jean b Dupont', `attendu "Jean b Dupont", obtenu "${parsedRows[0].nom}"`);
+  assert(nSanitized === 1, `un seul champ contenait < ou >, obtenu ${nSanitized}`);
+});
+
+test('buildFinalRows : préserve la 2e adresse géolocalisée et détecte la confiance faible', () => {
+  const parsedRows = [{ id: 1, groupe: '5', nom: 'Jean Dupont', rue: '10 Rue A', ville: 'Nancy', has2: true, rue2: '20 Rue B', ville2: 'Épinal', _task1: 0, _task2: 1 }];
+  const geoResults = [{ lat: 48.1, lon: 6.1, score: 0.3, label: 'A' }, { lat: 48.2, lon: 6.2, score: 0.9, label: 'B' }];
+  const { finalRows, failed, lowConfidence } = buildFinalRows(parsedRows, geoResults);
+  assert(finalRows.length === 1 && failed === 0, 'la ligne est géolocalisée');
+  assert(lowConfidence === 1, 'confiance faible détectée sur l\'adresse principale');
+  assert(finalRows[0].lat2 === 48.2 && finalRows[0].adresse2 === '20 Rue B', 'adresse secondaire préservée');
+});
+
+test('buildFinalRows : adresse principale non géolocalisée → classée en échec', () => {
+  const parsedRows = [{ id: 1, groupe: '5', nom: 'Bob Introuvable', rue: '99 Rue X', ville: 'Nulle Part', has2: false, _task1: 0 }];
+  const { finalRows, failedRows, failed } = buildFinalRows(parsedRows, [null]);
+  assert(finalRows.length === 0 && failed === 1 && failedRows.length === 1, 'ligne classée en échec, pas plantée');
 });
 
 // Verrou global entre actions longues — dupliqué depuis carte_groupes_nancy.html. Le

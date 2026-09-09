@@ -706,6 +706,19 @@ let savedTraceData = new Map();
 let failedImportRows = []; // lignes analysées mais non géolocalisées, pour un nouvel essai ciblé
 let duplicateGroups = []; // groupes de doublons probables (même nom + même adresse) dans data
 
+// Invalide le trajet actuellement tracé/affiché (résultat de calcul, non-intégré·es,
+// détail par personne, tracés sur la carte, panneau de résultats) — sans toucher à
+// savedTraceData (l'historique par groupe, pour l'export groupé) ni au rendu (laissé aux
+// appelants). Ce même bloc de 5 lignes était dupliqué à 11 endroits du fichier ; extrait
+// ici pour qu'un futur changement de cette logique n'ait qu'un seul endroit à modifier.
+function resetTraceState() {
+  routeResult = null;
+  unassignedIds = new Set();
+  lastTraceData = null;
+  routeLayerGroup.clearLayers();
+  document.getElementById('route-results').innerHTML = '';
+}
+
 function computeGroupList() {
   groupList = [...new Set(data.map(d => d.groupe))].sort((a, b) => {
     const na = Number(a), nb = Number(b);
@@ -753,7 +766,7 @@ function renderMarkers() {
         radius: 6, color: lowConf ? '#f59e0b' : '#fff', weight: lowConf ? 2.5 : 1.5,
         fillColor: groupColor(d.groupe), fillOpacity: 0.88
       })
-        .bindTooltip(`${d.nom} — ${d.adresse}, ${d.ville}<br>Groupe ${d.groupe}${lowConf ? '<br><em>Confiance de géocodage faible</em>' : ''}`, { sticky: true, direction: 'top' })
+        .bindTooltip(`${esc(d.nom)} — ${esc(d.adresse)}, ${esc(d.ville)}<br>Groupe ${esc(d.groupe)}${lowConf ? '<br><em>Confiance de géocodage faible</em>' : ''}`, { sticky: true, direction: 'top' })
         .addTo(markersLayer);
     });
     return;
@@ -769,26 +782,26 @@ function renderMarkers() {
 
     if (st.excluded) {
       L.circleMarker([d.lat, d.lon], { radius: 4, color: '#fff', weight: 1, fillColor: '#9aa3af', fillOpacity: 0.6 })
-        .bindTooltip(`${d.nom} — exclu du covoiturage`, { sticky: true, direction: 'top' })
+        .bindTooltip(`${esc(d.nom)} — exclu du covoiturage`, { sticky: true, direction: 'top' })
         .addTo(markersLayer);
       return;
     }
     if (st.driver) {
       const color = (routeResult && routeResult.colorByDriver.get(d.id)) || '#1f2430';
       L.marker([d.lat, d.lon], { icon: iconForColor('🚗', color, 26) })
-        .bindTooltip(`${d.nom} — conducteur (${d.adresse}, ${d.ville})`, { sticky: true, direction: 'top' })
+        .bindTooltip(`${esc(d.nom)} — conducteur (${esc(d.adresse)}, ${esc(d.ville)})`, { sticky: true, direction: 'top' })
         .addTo(markersLayer);
       return;
     }
     if (routeResult && unassignedIds.has(d.id)) {
       L.circleMarker([d.lat, d.lon], { radius: 6, color: '#b45309', weight: 2, fillColor: '#fbbf24', fillOpacity: 0.9 })
-        .bindTooltip(`${d.nom} — non intégré à un trajet (détour &gt; 15 min ou capacité atteinte)`, { sticky: true, direction: 'top' })
+        .bindTooltip(`${esc(d.nom)} — non intégré à un trajet (détour &gt; 15 min ou capacité atteinte)`, { sticky: true, direction: 'top' })
         .addTo(markersLayer);
       return;
     }
     const fill = (routeResult && routeResult.colorByPassenger.get(d.id)) || groupColor(d.groupe);
     L.circleMarker([d.lat, d.lon], { radius: 7, color: '#fff', weight: 1.5, fillColor: fill, fillOpacity: 0.92 })
-      .bindTooltip(`${d.nom} — ${d.adresse}, ${d.ville}`, { sticky: true, direction: 'top' })
+      .bindTooltip(`${esc(d.nom)} — ${esc(d.adresse)}, ${esc(d.ville)}`, { sticky: true, direction: 'top' })
       .addTo(markersLayer);
   });
 }
@@ -830,11 +843,7 @@ function initializeAllMemberStates() {
 
 function selectGroup(g) {
   selectedGroup = g;
-  routeResult = null;
-  unassignedIds = new Set();
-  lastTraceData = null;
-  routeLayerGroup.clearLayers();
-  document.getElementById('route-results').innerHTML = '';
+  resetTraceState();
 
   document.getElementById('btn-general').classList.toggle('active', selectedGroup === null && viewFilter === 'all');
   document.getElementById('btn-nancy').classList.toggle('active', selectedGroup === null && viewFilter === 'nancy');
@@ -896,11 +905,7 @@ function renderDestOverrideBox() {
 function invalidateAfterDestChange(affectedGroups) {
   affectedGroups.forEach(g => savedTraceData.delete(String(g)));
   if (selectedGroup !== null && affectedGroups.map(String).includes(String(selectedGroup))) {
-    routeResult = null;
-    unassignedIds = new Set();
-    lastTraceData = null;
-    routeLayerGroup.clearLayers();
-    document.getElementById('route-results').innerHTML = '';
+    resetTraceState();
   }
   renderMarkers();
   renderMemberList();
@@ -944,11 +949,7 @@ function renderMemberList() {
     cb.setAttribute('aria-label', `${m.nom} conduit`);
     cb.addEventListener('change', () => {
       st.driver = cb.checked;
-      routeResult = null;
-      unassignedIds = new Set();
-      lastTraceData = null;
-      routeLayerGroup.clearLayers();
-      document.getElementById('route-results').innerHTML = '';
+      resetTraceState();
       renderMarkers();
       updateRouteStatus();
     });
@@ -967,11 +968,7 @@ function renderMemberList() {
     exBtn.addEventListener('click', () => {
       st.excluded = !st.excluded;
       if (st.excluded) st.driver = false;
-      routeResult = null;
-      unassignedIds = new Set();
-      lastTraceData = null;
-      routeLayerGroup.clearLayers();
-      document.getElementById('route-results').innerHTML = '';
+      resetTraceState();
       renderMemberList();
       renderMarkers();
       updateRouteStatus();
@@ -1013,11 +1010,7 @@ function renderMemberList() {
       forceBtn.textContent = '🚗+';
       forceBtn.addEventListener('click', () => {
         st.forceInclude = !st.forceInclude;
-        routeResult = null;
-        unassignedIds = new Set();
-        lastTraceData = null;
-        routeLayerGroup.clearLayers();
-        document.getElementById('route-results').innerHTML = '';
+        resetTraceState();
         renderMemberList();
         renderMarkers();
         updateRouteStatus();
@@ -1240,14 +1233,267 @@ function esc(s) {
 // 12. ALGORITHME DE COVOITURAGE — TRAÇAGE D'UN GROUPE
 // Le cœur de l'outil : à partir des cases cochées du groupe affiché, décide qui conduit
 // réellement, qui ramasse qui, et calcule temps/distance/CO2/coût réels par la route.
-// Trois étapes successives dans traceRoutes() : (1) consolidation par économies (Clarke
-// & Wright) — réduit le nombre de conducteur·rices cochées en fusionnant les trajets
-// quand c'est avantageux ; (2) construction gloutonne — insère les passager·ères candidat·es
-// restant·es, à chaque étape dans l'insertion la moins coûteuse en distance parmi celles
-// dont le détour reste sous MAX_DETOUR_SECONDS et la capacité du conducteur non dépassée ;
-// (3) amélioration locale — relocalise un passager si cela réduit la distance totale.
-// Plusieurs essais randomisés (RESTARTS) sont comparés, le meilleur est conservé.
+// Les trois étapes de l'algorithme sont chacune une fonction autonome ci-dessous (pas
+// imbriquée dans traceRoutes() comme avant refonte du 9 sept — signature identique aux
+// copies déjà dupliquées dans tests_covoiturage.html) : (1) runSavingsConsolidation —
+// consolidation par économies (Clarke & Wright), réduit le nombre de conducteur·rices
+// cochées en fusionnant les trajets quand c'est avantageux ; (2) insertPickupCandidates —
+// construction gloutonne, insère les passager·ères candidat·es restant·es, à chaque étape
+// dans l'insertion la moins coûteuse en distance parmi celles dont le détour reste sous
+// MAX_DETOUR_SECONDS et la capacité du conducteur non dépassée ; (3) localSearchImprove —
+// amélioration locale, relocalise un passager si cela réduit la distance totale.
+// traceRoutes() orchestre ces trois étapes, plusieurs essais randomisés (RESTARTS) sont
+// comparés, le meilleur est conservé.
 // ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// Sous-fonctions pures de l'algorithme de covoiturage (utilisées par traceRoutes juste en
+// dessous), extraites de son corps pour ne plus être des fonctions imbriquées impossibles
+// à tester isolément — elles correspondent maintenant, signature pour signature, aux
+// copies déjà dupliquées dans tests_covoiturage.html. Pur déplacement de code : la logique
+// de chaque fonction est strictement inchangée, seuls les noms auparavant capturés par
+// fermeture (T, D, capacités...) sont devenus des paramètres explicites.
+// ------------------------------------------------------------------
+
+// Meilleure position d'insertion d'un point dans un trajet existant, sous la contrainte de
+// détour maximum (aller/retour, en temps). { pos: -1 } si aucune position ne convient.
+function bestInsertion(route, candidateIdx, T, D, maxDetourSeconds) {
+  let best = { pos: -1, cost: Infinity };
+  for (let k = 0; k < route.length - 1; k++) {
+    const a = route[k], b = route[k + 1];
+    const timeCost = T[a][candidateIdx] + T[candidateIdx][b] - T[a][b];
+    if (timeCost > maxDetourSeconds) continue;
+    const distCost = D[a][candidateIdx] + D[candidateIdx][b] - D[a][b];
+    if (distCost < best.cost) best = { pos: k + 1, cost: distCost };
+  }
+  return best;
+}
+
+// ÉTAPE 1 de traceRoutes — Consolidation par économies (algorithme des économies, Clarke &
+// Wright) : toutes les personnes cochées démarrent comme leur propre conducteur·rice,
+// seule dans sa voiture. À chaque étape, on cherche la fusion la plus rentable : absorber
+// une personne encore seule dans le trajet d'une autre, quand le détour que ça coûte est
+// plus petit que le trajet qu'elle aurait fait seule (donc un gain net de distance, pas
+// juste "ça rentre dans les 15 min"). On répète jusqu'à ce qu'aucune fusion ne soit plus
+// avantageuse. Résultat : le nombre de conducteurs réels n'est plus fixé par les cases
+// cochées une par une, mais déduit de ce qui minimise la distance totale.
+function runSavingsConsolidation(nDrivers, destIdx, capacities, T, D, maxDetourSeconds) {
+  const routes = new Map(), loads = new Map(), solo = new Set();
+  for (let i = 0; i < nDrivers; i++) {
+    routes.set(i, [i, destIdx]);
+    loads.set(i, 0);
+    solo.add(i);
+  }
+  let improved = true;
+  while (improved) {
+    improved = false;
+    let best = null;
+    for (const driverIdx of routes.keys()) {
+      if (loads.get(driverIdx) >= capacities[driverIdx]) continue;
+      for (const passengerIdx of solo) {
+        if (passengerIdx === driverIdx) continue;
+        const ins = bestInsertion(routes.get(driverIdx), passengerIdx, T, D, maxDetourSeconds);
+        if (ins.pos === -1) continue;
+        const soloDist = D[passengerIdx][destIdx]; // ce que cette personne aurait parcouru seule
+        const netSaving = soloDist - ins.cost; // positif = la fusion réduit la distance totale
+        if (netSaving > 1e-6 && (best === null || netSaving > best.netSaving)) {
+          best = { driverIdx, passengerIdx, insertPos: ins.pos, netSaving };
+        }
+      }
+    }
+    if (best === null) break;
+    const route = routes.get(best.driverIdx);
+    route.splice(best.insertPos, 0, best.passengerIdx);
+    loads.set(best.driverIdx, loads.get(best.driverIdx) + 1);
+    solo.delete(best.passengerIdx);
+    solo.delete(best.driverIdx);
+    routes.delete(best.passengerIdx);
+    loads.delete(best.passengerIdx);
+    improved = true;
+  }
+  return { routes, loads };
+}
+
+// ÉTAPE 2 de traceRoutes — insère les candidat·es au ramassage restant·es (candidateIndices)
+// dans les trajets des conducteur·rices survivant·es de l'étape 1 (baseRoutes/baseLoads).
+// Construction gloutonne : à chaque étape, parmi toutes les insertions valides, choisit la
+// moins chère (randomize=false) ou tire au sort parmi les 3 moins chères (randomize=true)
+// — permet à plusieurs essais de diverger.
+function insertPickupCandidates(baseRoutes, baseLoads, candidateIndices, capacities, T, D, maxDetourSeconds, randomize) {
+  const routes = baseRoutes.map(r => [...r]);
+  const routeLoads = [...baseLoads];
+  const remaining = [...candidateIndices];
+
+  while (remaining.length) {
+    const options = [];
+    for (let di = 0; di < routes.length; di++) {
+      if (routeLoads[di] >= capacities[di]) continue;
+      for (let ci = 0; ci < remaining.length; ci++) {
+        const ins = bestInsertion(routes[di], remaining[ci], T, D, maxDetourSeconds);
+        if (ins.pos === -1) continue;
+        options.push({ driverIdx: di, candPos: ci, insertPos: ins.pos, cost: ins.cost });
+      }
+    }
+    if (options.length === 0) break;
+    options.sort((a, b) => a.cost - b.cost);
+    const choice = (randomize && options.length > 1)
+      ? options[Math.floor(Math.random() * Math.min(3, options.length))]
+      : options[0];
+    const candIdx = remaining.splice(choice.candPos, 1)[0];
+    routes[choice.driverIdx].splice(choice.insertPos, 0, candIdx);
+    routeLoads[choice.driverIdx]++;
+  }
+  return { routes, routeLoads, remaining };
+}
+
+function routeDistance(route, D) {
+  let total = 0;
+  for (let k = 0; k < route.length - 1; k++) total += D[route[k]][route[k + 1]];
+  return total;
+}
+function totalDistance(routes, D) {
+  return routes.reduce((sum, r) => sum + routeDistance(r, D), 0);
+}
+
+// ÉTAPE 3 de traceRoutes — amélioration locale : relocalise un passager si cela réduit la
+// distance totale, toujours sous la contrainte de détour maximum. Modifie routes/routeLoads
+// en place (comme avant cette extraction).
+function localSearchImprove(routes, routeLoads, capacities, T, D, maxDetourSeconds) {
+  for (let pass = 0; pass < 200; pass++) {
+    let improved = false;
+    outer:
+    for (let di = 0; di < routes.length; di++) {
+      for (let pi = 1; pi < routes[di].length - 1; pi++) {
+        const passenger = routes[di][pi];
+        const withoutRoute = routes[di].slice(0, pi).concat(routes[di].slice(pi + 1));
+        const removedGain = routeDistance(routes[di], D) - routeDistance(withoutRoute, D);
+
+        for (let dj = 0; dj < routes.length; dj++) {
+          if (dj !== di && routeLoads[dj] >= capacities[dj]) continue;
+          const target = dj === di ? withoutRoute : routes[dj];
+          const ins = bestInsertion(target, passenger, T, D, maxDetourSeconds);
+          if (ins.pos === -1) continue;
+          if (dj === di && ins.pos === pi) continue;
+
+          if (ins.cost < removedGain - 1e-6) {
+            const newTarget = target.slice(0, ins.pos).concat([passenger], target.slice(ins.pos));
+            if (dj === di) {
+              routes[di] = newTarget;
+            } else {
+              routes[di] = withoutRoute;
+              routes[dj] = newTarget;
+              routeLoads[di]--;
+              routeLoads[dj]++;
+            }
+            improved = true;
+            break outer;
+          }
+        }
+      }
+    }
+    if (!improved) break;
+  }
+}
+
+// Calcule les totaux resserrés (personnes concernées par CET itinéraire) et le détail par
+// personne, pour l'affichage et l'export — pure fonction du résultat déjà calculé par
+// traceRoutes (aucun appel réseau ni accès au DOM).
+function buildTraceSummary({ drivers, survivingDrivers, pickupCandidates, independentMembers, unassignedIds, routes, roadPoints, driverInfos, metricsCtx }) {
+  // Totaux resserrés : seulement les personnes concernées par CET itinéraire (voitures
+  // cochées + candidat·es au ramassage, intégré·es ou non), pas les indépendant·es qui
+  // n'en font pas partie. Utilisés à la fois pour l'écran et pour le PDF.
+  const concerned = [...drivers, ...pickupCandidates];
+  let concernedSeulKm = 0, concernedSeulSeconds = 0, concernedSeulCO2 = 0, concernedSeulCost = 0;
+  concerned.forEach(m => {
+    const s = computeSoloMetrics(m, metricsCtx);
+    concernedSeulKm += s.km; concernedSeulSeconds += s.seconds; concernedSeulCO2 += s.co2; concernedSeulCost += s.cost;
+  });
+  let concernedCovoitKm = 0, concernedCovoitSeconds = 0, concernedCovoitCO2 = 0, concernedCovoitCost = 0;
+  driverInfos.forEach(r => {
+    concernedCovoitKm += r.carpoolKm; concernedCovoitSeconds += r.carpoolSeconds;
+    concernedCovoitCO2 += r.carpoolCO2; concernedCovoitCost += r.carpoolCost;
+  });
+  pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(m => {
+    const s = computeSoloMetrics(m, metricsCtx);
+    concernedCovoitKm += s.km; concernedCovoitSeconds += s.seconds; concernedCovoitCO2 += s.co2; concernedCovoitCost += s.cost;
+  });
+  const concernedTotals = {
+    seulKm: concernedSeulKm, seulSeconds: concernedSeulSeconds, seulCO2: concernedSeulCO2, seulCost: concernedSeulCost,
+    covoitKm: concernedCovoitKm, covoitSeconds: concernedCovoitSeconds, covoitCO2: concernedCovoitCO2, covoitCost: concernedCovoitCost
+  };
+
+  // Détail par personne, pour l'export (colonne "seul" avec visibilité individuelle,
+  // plutôt qu'une somme opaque). Chaque passager·ère apparaît juste après son
+  // conducteur·rice, dans l'ordre de ramassage ; les indépendant·es sont regroupé·es
+  // par mode de déplacement.
+  const perPerson = [];
+  survivingDrivers.forEach((d, di) => {
+    const s = computeSoloMetrics(d, metricsCtx);
+    const info = driverInfos[di];
+    perPerson.push({
+      nom: d.nom, role: 'Conducteur·rice', mode: activeTransportMode(d) || '—',
+      seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
+      covoitLabel: `Conduit : ${fmtKm(info.carpoolKm)}, ${fmtMin(info.carpoolSeconds)}, ${fmtKg(info.carpoolCO2)}, ${fmtEuro(info.carpoolCost)}`
+    });
+    routes[di].slice(1, -1).forEach(idx => {
+      const c = roadPoints[idx];
+      const sc = computeSoloMetrics(c, metricsCtx);
+      perPerson.push({
+        nom: c.nom, mode: activeTransportMode(c) || '—',
+        role: `Passager·ère (avec ${d.nom})`,
+        seulKm: sc.km, seulSeconds: sc.seconds, seulCO2: sc.co2, seulCost: sc.cost,
+        covoitLabel: `Absorbé dans le trajet de ${d.nom}`
+      });
+    });
+  });
+  pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(c => {
+    const s = computeSoloMetrics(c, metricsCtx);
+    perPerson.push({
+      nom: c.nom, mode: activeTransportMode(c) || '—', role: 'Non intégré(e)',
+      seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
+      covoitLabel: 'Non intégré(e) : trajet seul inchangé'
+    });
+  });
+  const modeOrder = Object.keys(TRANSPORT_PROFILES);
+  const sortedIndependents = [...independentMembers].sort((a, b) =>
+    modeOrder.indexOf(activeTransportMode(a)) - modeOrder.indexOf(activeTransportMode(b))
+  );
+  sortedIndependents.forEach(m => {
+    const s = computeSoloMetrics(m, metricsCtx);
+    perPerson.push({
+      nom: m.nom, role: 'Indépendant(e)', mode: activeTransportMode(m) || '—',
+      seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
+      covoitLabel: 'Inchangé (mode indépendant)'
+    });
+  });
+
+  return { concerned, concernedTotals, perPerson };
+}
+
+// Métriques "seul·e" d'une personne selon SON propre mode de déplacement actif — pure
+// fonction du contexte de tables T/D (routières, vélo, marche) construit par traceRoutes.
+function computeSoloMetrics(m, ctx) {
+  const mode = activeTransportMode(m);
+  const profile = profileFor(mode);
+  let km, seconds;
+  if (profile.kind === 'driving' && ctx.roadIndexOf.has(m)) {
+    const idx = ctx.roadIndexOf.get(m);
+    km = ctx.D[idx][ctx.roadDestIdx] / 1000;
+    seconds = profile.speedKmh ? (km / profile.speedKmh * 3600) : ctx.T[idx][ctx.roadDestIdx];
+  } else if (profile.kind === 'cycling' && ctx.cycleIndexOf.has(m)) {
+    const idx = ctx.cycleIndexOf.get(m);
+    km = ctx.cycleD[idx][ctx.cycleDestIdx] / 1000;
+    seconds = ctx.cycleT[idx][ctx.cycleDestIdx];
+  } else if (profile.kind === 'foot' && ctx.footIndexOf.has(m)) {
+    const idx = ctx.footIndexOf.get(m);
+    km = ctx.footD[idx][ctx.footDestIdx] / 1000;
+    seconds = profile.speedKmh ? (km / profile.speedKmh * 3600) : ctx.footT[idx][ctx.footDestIdx];
+  } else {
+    km = haversine(m, ctx.dest);
+    seconds = (km / (profile.speedKmh || FALLBACK_SPEED_KMH)) * 3600;
+  }
+  return { km, seconds, co2: km * profile.emission / 1000, cost: km * profile.cost };
+}
+
 async function traceRoutes() {
   const members = data.filter(d => String(d.groupe) === String(selectedGroup));
   const enriched = members.map(d => Object.assign({}, d, memberState.get(d.id) || { driver: false, excluded: false, useBackup: false, forceInclude: false }));
@@ -1322,7 +1568,7 @@ async function traceRoutes() {
         const t = await fetchDurationMatrix(cyclePoints, 'cycling');
         cycleT = t.durations; cycleD = t.distances;
         await sleep(1100);
-      } catch (err) { /* repli à vol d'oiseau géré dans soloMetrics */ }
+      } catch (err) { /* repli à vol d'oiseau géré dans computeSoloMetrics */ }
     }
 
     let footT = null, footD = null, footDestIdx = -1;
@@ -1335,93 +1581,16 @@ async function traceRoutes() {
         const t = await fetchDurationMatrix(footPoints, 'foot');
         footT = t.durations; footD = t.distances;
         await sleep(1100);
-      } catch (err) { /* repli à vol d'oiseau géré dans soloMetrics */ }
+      } catch (err) { /* repli à vol d'oiseau géré dans computeSoloMetrics */ }
     }
 
-    // Métriques solo d'une personne, selon SON propre mode de déplacement actif.
-    function soloMetrics(m) {
-      const mode = activeTransportMode(m);
-      const profile = profileFor(mode);
-      let km, seconds;
-      if (profile.kind === 'driving' && roadIndexOf.has(m)) {
-        const idx = roadIndexOf.get(m);
-        km = D[idx][roadDestIdx] / 1000;
-        seconds = profile.speedKmh ? (km / profile.speedKmh * 3600) : T[idx][roadDestIdx];
-      } else if (profile.kind === 'cycling' && cycleIndexOf.has(m)) {
-        const idx = cycleIndexOf.get(m);
-        km = cycleD[idx][cycleDestIdx] / 1000;
-        seconds = cycleT[idx][cycleDestIdx];
-      } else if (profile.kind === 'foot' && footIndexOf.has(m)) {
-        const idx = footIndexOf.get(m);
-        km = footD[idx][footDestIdx] / 1000;
-        seconds = profile.speedKmh ? (km / profile.speedKmh * 3600) : footT[idx][footDestIdx];
-      } else {
-        km = haversine(m, dest);
-        seconds = (km / (profile.speedKmh || FALLBACK_SPEED_KMH)) * 3600;
-      }
-      return { km, seconds, co2: km * profile.emission / 1000, cost: km * profile.cost };
-    }
+    // Regroupe les tables ci-dessus pour computeSoloMetrics (fonction pure, section
+    // ci-dessus) — évite de lui passer une dizaine de paramètres séparés.
+    const metricsCtx = { dest, roadIndexOf, roadDestIdx, T, D, cycleIndexOf, cycleDestIdx, cycleT, cycleD, footIndexOf, footDestIdx, footT, footD };
 
     // Capacité de CHAQUE personne cochée (le pool complet, avant qu'on ne sache qui va
     // vraiment conduire).
     const capacities = drivers.map(d => (Number.isFinite(d.places) && d.places > 0) ? d.places : DEFAULT_CAPACITY);
-
-    function bestInsertion(route, candidateIdx) {
-      let best = { pos: -1, cost: Infinity };
-      for (let k = 0; k < route.length - 1; k++) {
-        const a = route[k], b = route[k + 1];
-        const timeCost = T[a][candidateIdx] + T[candidateIdx][b] - T[a][b];
-        if (timeCost > MAX_DETOUR_SECONDS) continue;
-        const distCost = D[a][candidateIdx] + D[candidateIdx][b] - D[a][b];
-        if (distCost < best.cost) best = { pos: k + 1, cost: distCost };
-      }
-      return best;
-    }
-
-    // ÉTAPE 1 — Consolidation par économies (algorithme des économies, Clarke & Wright) :
-    // toutes les personnes cochées démarrent comme leur propre conducteur·rice, seule dans
-    // sa voiture. À chaque étape, on cherche la fusion la plus rentable : absorber une
-    // personne encore seule dans le trajet d'une autre, quand le détour que ça coûte est
-    // plus petit que le trajet qu'elle aurait fait seule (donc un gain net de distance,
-    // pas juste "ça rentre dans les 15 min"). On répète jusqu'à ce qu'aucune fusion ne soit
-    // plus avantageuse. Résultat : le nombre de conducteurs réels n'est plus fixé par les
-    // cases cochées une par une, mais déduit de ce qui minimise la distance totale.
-    function runSavingsConsolidation() {
-      const routes = new Map(), loads = new Map(), solo = new Set();
-      for (let i = 0; i < drivers.length; i++) {
-        routes.set(i, [i, roadDestIdx]);
-        loads.set(i, 0);
-        solo.add(i);
-      }
-      let improved = true;
-      while (improved) {
-        improved = false;
-        let best = null;
-        for (const driverIdx of routes.keys()) {
-          if (loads.get(driverIdx) >= capacities[driverIdx]) continue;
-          for (const passengerIdx of solo) {
-            if (passengerIdx === driverIdx) continue;
-            const ins = bestInsertion(routes.get(driverIdx), passengerIdx);
-            if (ins.pos === -1) continue;
-            const soloDist = D[passengerIdx][roadDestIdx]; // ce que cette personne aurait parcouru seule
-            const netSaving = soloDist - ins.cost; // positif = la fusion réduit la distance totale
-            if (netSaving > 1e-6 && (best === null || netSaving > best.netSaving)) {
-              best = { driverIdx, passengerIdx, insertPos: ins.pos, netSaving };
-            }
-          }
-        }
-        if (best === null) break;
-        const route = routes.get(best.driverIdx);
-        route.splice(best.insertPos, 0, best.passengerIdx);
-        loads.set(best.driverIdx, loads.get(best.driverIdx) + 1);
-        solo.delete(best.passengerIdx);
-        solo.delete(best.driverIdx);
-        routes.delete(best.passengerIdx);
-        loads.delete(best.passengerIdx);
-        improved = true;
-      }
-      return { routes, loads };
-    }
 
     // En mode "tout le monde", on ne consolide PAS les conducteur·rices cochées entre
     // elles/eux : le nombre de candidat·es à covoiturer est potentiellement très grand
@@ -1436,7 +1605,7 @@ async function traceRoutes() {
       baseRoutes = drivers.map((d, i) => [i, roadDestIdx]);
       baseLoads = drivers.map(() => 0);
     } else {
-      const consolidation = runSavingsConsolidation();
+      const consolidation = runSavingsConsolidation(drivers.length, roadDestIdx, capacities, T, D, MAX_DETOUR_SECONDS);
       survivingIdxs = [...consolidation.routes.keys()].sort((a, b) => a - b);
       survivingDrivers = survivingIdxs.map(idx => drivers[idx]);
       survivingCapacities = survivingIdxs.map(idx => capacities[idx]);
@@ -1444,91 +1613,17 @@ async function traceRoutes() {
       baseLoads = survivingIdxs.map(idx => consolidation.loads.get(idx));
     }
 
-    // ÉTAPE 2 — Insertion des candidats non cochés (mode voiture mais pas sélectionnés
-    // comme conducteur·rices) dans les trajets des conducteur·rices survivant·es de l'étape 1.
-    // Construction : à chaque étape, parmi toutes les insertions valides, choisit la moins
-    // chère (randomize=false, comportement d'origine) ou tire au sort parmi les 3 moins
-    // chères (randomize=true) — permet à plusieurs essais de diverger.
-    function runConstruction(randomize) {
-      const routes = baseRoutes.map(r => [...r]);
-      const routeLoads = [...baseLoads];
-      const remaining = pickupCandidates.map((c, i) => drivers.length + i);
-
-      while (remaining.length) {
-        const options = [];
-        for (let di = 0; di < routes.length; di++) {
-          if (routeLoads[di] >= survivingCapacities[di]) continue;
-          for (let ci = 0; ci < remaining.length; ci++) {
-            const ins = bestInsertion(routes[di], remaining[ci]);
-            if (ins.pos === -1) continue;
-            options.push({ driverIdx: di, candPos: ci, insertPos: ins.pos, cost: ins.cost });
-          }
-        }
-        if (options.length === 0) break;
-        options.sort((a, b) => a.cost - b.cost);
-        const choice = (randomize && options.length > 1)
-          ? options[Math.floor(Math.random() * Math.min(3, options.length))]
-          : options[0];
-        const candIdx = remaining.splice(choice.candPos, 1)[0];
-        routes[choice.driverIdx].splice(choice.insertPos, 0, candIdx);
-        routeLoads[choice.driverIdx]++;
-      }
-      return { routes, routeLoads, remaining };
-    }
-
-    function routeDistance(route) {
-      let total = 0;
-      for (let k = 0; k < route.length - 1; k++) total += D[route[k]][route[k + 1]];
-      return total;
-    }
-    function totalDistance(routes) {
-      return routes.reduce((sum, r) => sum + routeDistance(r), 0);
-    }
-    function localSearchImprove(routes, routeLoads) {
-      for (let pass = 0; pass < 200; pass++) {
-        let improved = false;
-        outer:
-        for (let di = 0; di < routes.length; di++) {
-          for (let pi = 1; pi < routes[di].length - 1; pi++) {
-            const passenger = routes[di][pi];
-            const withoutRoute = routes[di].slice(0, pi).concat(routes[di].slice(pi + 1));
-            const removedGain = routeDistance(routes[di]) - routeDistance(withoutRoute);
-
-            for (let dj = 0; dj < routes.length; dj++) {
-              if (dj !== di && routeLoads[dj] >= survivingCapacities[dj]) continue;
-              const target = dj === di ? withoutRoute : routes[dj];
-              const ins = bestInsertion(target, passenger);
-              if (ins.pos === -1) continue;
-              if (dj === di && ins.pos === pi) continue;
-
-              if (ins.cost < removedGain - 1e-6) {
-                const newTarget = target.slice(0, ins.pos).concat([passenger], target.slice(ins.pos));
-                if (dj === di) {
-                  routes[di] = newTarget;
-                } else {
-                  routes[di] = withoutRoute;
-                  routes[dj] = newTarget;
-                  routeLoads[di]--;
-                  routeLoads[dj]++;
-                }
-                improved = true;
-                break outer;
-              }
-            }
-          }
-        }
-        if (!improved) break;
-      }
-    }
+    // Indices (dans T/D) des candidat·es au ramassage restant·es, pour l'étape 2.
+    const candidateIndices = pickupCandidates.map((c, i) => drivers.length + i);
 
     // Essai déterministe (comportement d'origine) + plusieurs essais randomisés ; on garde
     // le résultat de distance totale la plus faible après amélioration locale de chacun.
     const RESTARTS = 6;
     let bestRun = null;
     for (let attempt = 0; attempt <= RESTARTS; attempt++) {
-      const run = runConstruction(attempt > 0);
-      localSearchImprove(run.routes, run.routeLoads);
-      const dist = totalDistance(run.routes);
+      const run = insertPickupCandidates(baseRoutes, baseLoads, candidateIndices, survivingCapacities, T, D, MAX_DETOUR_SECONDS, attempt > 0);
+      localSearchImprove(run.routes, run.routeLoads, survivingCapacities, T, D, MAX_DETOUR_SECONDS);
+      const dist = totalDistance(run.routes, D);
       if (bestRun === null || dist < bestRun.dist) bestRun = { ...run, dist };
     }
     const routes = bestRun.routes, routeLoads = bestRun.routeLoads, remaining = bestRun.remaining;
@@ -1583,75 +1678,12 @@ async function traceRoutes() {
       if (di < survivingDrivers.length - 1) await sleep(1100);
     }
 
-    // Totaux resserrés : seulement les personnes concernées par CET itinéraire (voitures
-    // cochées + candidat·es au ramassage, intégré·es ou non), pas les indépendant·es qui
-    // n'en font pas partie. Utilisés à la fois pour l'écran et pour le PDF.
-    const concerned = [...drivers, ...pickupCandidates];
-    let concernedSeulKm = 0, concernedSeulSeconds = 0, concernedSeulCO2 = 0, concernedSeulCost = 0;
-    concerned.forEach(m => {
-      const s = soloMetrics(m);
-      concernedSeulKm += s.km; concernedSeulSeconds += s.seconds; concernedSeulCO2 += s.co2; concernedSeulCost += s.cost;
+    const { concerned, concernedTotals, perPerson } = buildTraceSummary({
+      drivers, survivingDrivers, pickupCandidates, independentMembers, unassignedIds, routes, roadPoints, driverInfos, metricsCtx
     });
-    let concernedCovoitKm = 0, concernedCovoitSeconds = 0, concernedCovoitCO2 = 0, concernedCovoitCost = 0;
-    driverInfos.forEach(r => {
-      concernedCovoitKm += r.carpoolKm; concernedCovoitSeconds += r.carpoolSeconds;
-      concernedCovoitCO2 += r.carpoolCO2; concernedCovoitCost += r.carpoolCost;
-    });
-    pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(m => {
-      const s = soloMetrics(m);
-      concernedCovoitKm += s.km; concernedCovoitSeconds += s.seconds; concernedCovoitCO2 += s.co2; concernedCovoitCost += s.cost;
-    });
-    const concernedTotals = {
-      seulKm: concernedSeulKm, seulSeconds: concernedSeulSeconds, seulCO2: concernedSeulCO2, seulCost: concernedSeulCost,
-      covoitKm: concernedCovoitKm, covoitSeconds: concernedCovoitSeconds, covoitCO2: concernedCovoitCO2, covoitCost: concernedCovoitCost
-    };
 
     routeResult = { colorByDriver, colorByPassenger };
 
-    // Détail par personne, pour l'export (colonne "seul" avec visibilité individuelle,
-    // plutôt qu'une somme opaque). Chaque passager·ère apparaît juste après son
-    // conducteur·rice, dans l'ordre de ramassage ; les indépendant·es sont regroupé·es
-    // par mode de déplacement.
-    const perPerson = [];
-    survivingDrivers.forEach((d, di) => {
-      const s = soloMetrics(d);
-      const info = driverInfos[di];
-      perPerson.push({
-        nom: d.nom, role: 'Conducteur·rice', mode: activeTransportMode(d) || '—',
-        seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
-        covoitLabel: `Conduit : ${fmtKm(info.carpoolKm)}, ${fmtMin(info.carpoolSeconds)}, ${fmtKg(info.carpoolCO2)}, ${fmtEuro(info.carpoolCost)}`
-      });
-      routes[di].slice(1, -1).forEach(idx => {
-        const c = roadPoints[idx];
-        const sc = soloMetrics(c);
-        perPerson.push({
-          nom: c.nom, mode: activeTransportMode(c) || '—',
-          role: `Passager·ère (avec ${d.nom})`,
-          seulKm: sc.km, seulSeconds: sc.seconds, seulCO2: sc.co2, seulCost: sc.cost,
-          covoitLabel: `Absorbé dans le trajet de ${d.nom}`
-        });
-      });
-    });
-    pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(c => {
-      const s = soloMetrics(c);
-      perPerson.push({
-        nom: c.nom, mode: activeTransportMode(c) || '—', role: 'Non intégré(e)',
-        seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
-        covoitLabel: 'Non intégré(e) : trajet seul inchangé'
-      });
-    });
-    const modeOrder = Object.keys(TRANSPORT_PROFILES);
-    const sortedIndependents = [...independentMembers].sort((a, b) =>
-      modeOrder.indexOf(activeTransportMode(a)) - modeOrder.indexOf(activeTransportMode(b))
-    );
-    sortedIndependents.forEach(m => {
-      const s = soloMetrics(m);
-      perPerson.push({
-        nom: m.nom, role: 'Indépendant(e)', mode: activeTransportMode(m) || '—',
-        seulKm: s.km, seulSeconds: s.seconds, seulCO2: s.co2, seulCost: s.cost,
-        covoitLabel: 'Inchangé (mode indépendant)'
-      });
-    });
     lastTraceData = {
       perPerson,
       groupLabel: `Groupe ${selectedGroup}`,
@@ -1765,11 +1797,7 @@ document.getElementById('bad-weather-toggle').addEventListener('change', (e) => 
   // Les modes effectifs changent potentiellement pour tout le monde à pied, dans tous les
   // groupes : les trajets déjà tracés (mémorisés pour l'export groupé) sont donc obsolètes.
   savedTraceData = new Map();
-  routeResult = null;
-  unassignedIds = new Set();
-  lastTraceData = null;
-  routeLayerGroup.clearLayers();
-  document.getElementById('route-results').innerHTML = '';
+  resetTraceState();
   renderMarkers();
   renderMemberList();
   updateRouteStatus();
@@ -1779,11 +1807,7 @@ document.getElementById('closest-address-toggle').addEventListener('change', (e)
   applyClosestAddressPreference();
   // Les positions de certaines personnes changent : les trajets déjà tracés sont obsolètes.
   savedTraceData = new Map();
-  routeResult = null;
-  unassignedIds = new Set();
-  lastTraceData = null;
-  routeLayerGroup.clearLayers();
-  document.getElementById('route-results').innerHTML = '';
+  resetTraceState();
   renderMarkers();
   renderMemberList();
   fitToData();
@@ -1793,11 +1817,7 @@ document.getElementById('everyone-mode-toggle').addEventListener('change', (e) =
   // Qui est candidat·e au ramassage change potentiellement pour tout le monde : les trajets
   // déjà tracés sont obsolètes.
   savedTraceData = new Map();
-  routeResult = null;
-  unassignedIds = new Set();
-  lastTraceData = null;
-  routeLayerGroup.clearLayers();
-  document.getElementById('route-results').innerHTML = '';
+  resetTraceState();
   renderMarkers();
   renderMemberList();
   updateRouteStatus();
@@ -1850,11 +1870,7 @@ document.getElementById('reset-group-btn').addEventListener('click', () => {
     driver: isCarDriverMode(m.deplacement),
     excluded: false, useBackup: false, forceInclude: false
   }));
-  routeResult = null;
-  unassignedIds = new Set();
-  lastTraceData = null;
-  routeLayerGroup.clearLayers();
-  document.getElementById('route-results').innerHTML = '';
+  resetTraceState();
   renderMemberList();
   renderMarkers();
   updateRouteStatus();
@@ -2237,6 +2253,105 @@ function computeGlobalSummary() {
   };
 }
 
+// Dessine la page de bilan global en tête du PDF groupé (première page) — extrait de
+// exportAllGroups sur le même principe que les fonctions drawPageHeader/drawGroupBilan
+// déjà présentes plus haut (section 14).
+function drawGlobalSummaryPage(doc, s) {
+  const margin0 = 12;
+  const pageW0 = doc.internal.pageSize.getWidth();
+  drawPageHeader(doc, 'Covoiturage L1 STAPS — Bilan global', `${new Date().toLocaleString('fr-FR')} — ${s.nGroups} groupe(s) tracé(s)`, pageW0, margin0);
+
+  const co2Saved = s.seulCO2 - s.covoitCO2;
+  const co2Pct = s.seulCO2 > 0 ? (co2Saved / s.seulCO2 * 100) : 0;
+  const costSaved = s.seulCost - s.covoitCost;
+  const costPct = s.seulCost > 0 ? (costSaved / s.seulCost * 100) : 0;
+  const kmSaved = s.seulKm - s.covoitKm;
+  const kmPct = s.seulKm > 0 ? (kmSaved / s.seulKm * 100) : 0;
+
+  doc.setFontSize(10);
+  const lines = [
+    `Personnes concernées par le covoiturage : ${s.nDrivers + s.nPassengers + s.nUnassigned} — ${s.nDrivers} conducteur·rices, ${s.nPassengers} passager·ères covoituré·es, ${s.nUnassigned} non intégré·es.`,
+    `Véhicules évités : ${s.carsAvoided} (${s.nCarPeople} personnes en voiture ramenées à ${s.nDrivers} véhicules réellement utilisés).`,
+    `CO2 : ${fmtKg(s.covoitCO2)} avec le covoiturage, contre ${fmtKg(s.seulCO2)} si chacun roulait seul — soit ${fmtKg(co2Saved)} évités (${co2Pct.toFixed(0)} %).`,
+    `Coût : ${fmtEuro(s.covoitCost)} avec le covoiturage, contre ${fmtEuro(s.seulCost)} si chacun roulait seul — soit ${fmtEuro(costSaved)} économisés (${costPct.toFixed(0)} %).`,
+    `Distance cumulée : ${fmtKm(s.covoitKm)} avec le covoiturage, contre ${fmtKm(s.seulKm)} si chacun roulait seul — soit ${fmtKm(kmSaved)} évités (${kmPct.toFixed(0)} %).`
+  ];
+  let y = 26;
+  lines.forEach(line => { doc.text(line, margin0, y); y += 6; });
+
+  const totalConcerned = s.perGroup.reduce((sum, g) => sum + g.nPeople, 0);
+  const modeRows = Object.entries(s.modeCount)
+    .sort((a, b) => b[1] - a[1])
+    .map(([mode, n]) => [mode, String(n), ((n / totalConcerned) * 100).toFixed(0) + ' %']);
+  doc.autoTable({
+    startY: y + 4,
+    margin: { left: margin0, right: pageW0 / 2 },
+    head: [['Mode de déplacement', 'Personnes', 'Part']],
+    body: modeRows,
+    styles: { fontSize: 7.5, cellPadding: 1.5 },
+    headStyles: { fillColor: [31, 41, 59] }
+  });
+
+  doc.autoTable({
+    startY: y + 4,
+    margin: { left: pageW0 / 2 + 4, right: margin0 },
+    head: [['Groupe', 'Personnes', 'Conduct.', 'CO2 seul', 'CO2 covoit.']],
+    body: s.perGroup.map(g => [String(g.groupe), String(g.nPeople), String(g.nDrivers), fmtKg(g.seulCO2), fmtKg(g.covoitCO2)]),
+    styles: { fontSize: 7.5, cellPadding: 1.5 },
+    headStyles: { fillColor: [31, 41, 59] }
+  });
+}
+
+// Bascule temporairement l'affichage sur le groupe g (état déjà sauvegardé dans
+// savedTraceData par un traceRoutes() antérieur), capture la carte, et ajoute au document
+// PDF ses deux pages (carte pleine page, puis détail + bilan) — utilisé par
+// exportAllGroups pour chaque groupe du document groupé.
+async function appendGroupPagesToDoc(doc, g, saved) {
+  const concerned = filterConcerned(saved.perPerson);
+
+  selectedGroup = g;
+  memberState = saved.memberStateSnapshot;
+  routeResult = { colorByDriver: saved.colorByDriver, colorByPassenger: saved.colorByPassenger };
+  unassignedIds = saved.unassignedIds;
+  renderMarkers();
+  routeLayerGroup.clearLayers();
+  saved.driverGeometries.forEach(dg => {
+    L.geoJSON(dg.geometry, { style: { color: dg.color, weight: 4, opacity: 0.85, dashArray: dg.usedFallback ? '7,7' : null } }).addTo(routeLayerGroup);
+  });
+  await new Promise(r => requestAnimationFrame(r));
+
+  const mapCanvas = await captureMapCanvas();
+  const mapImg = mapCanvas.toDataURL('image/png');
+
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 10;
+  const contentTop = 22;
+  const groupTitle = `Covoiturage L1 STAPS — Groupe ${g} — arrivée : ${destinationLabelForGroup(g)}`;
+  const dateStr = new Date().toLocaleString('fr-FR');
+
+  // Page carte pleine page
+  doc.addPage();
+  drawPageHeader(doc, groupTitle, dateStr, pageW, margin);
+  const availW = pageW - margin * 2;
+  const availH = pageH - contentTop - margin;
+  let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
+  if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
+  doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
+
+  // Page données : tableau détaillé + bilan du groupe
+  doc.addPage();
+
+  if (concerned.length) {
+    const bilan = computeGroupBilan(concerned, saved.concernedTotals);
+    buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan);
+  } else {
+    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
+    doc.setFontSize(9);
+    doc.text('Aucune personne concernée par le covoiturage dans ce groupe.', margin, contentTop + 6);
+  }
+}
+
 async function exportAllGroups() {
   if (groupList.length === 0) {
     alert("Aucune donnée chargée.");
@@ -2288,99 +2403,12 @@ async function exportAllGroups() {
   });
 
     // ÉTAPE 2 — construit le PDF à partir des groupes tracés à l'étape précédente
-    // Page de bilan global, en tête du document
-    const s = computeGlobalSummary();
-    const margin0 = 12;
-    const pageW0 = doc.internal.pageSize.getWidth();
-    drawPageHeader(doc, 'Covoiturage L1 STAPS — Bilan global', `${new Date().toLocaleString('fr-FR')} — ${s.nGroups} groupe(s) tracé(s)`, pageW0, margin0);
-
-    const co2Saved = s.seulCO2 - s.covoitCO2;
-    const co2Pct = s.seulCO2 > 0 ? (co2Saved / s.seulCO2 * 100) : 0;
-    const costSaved = s.seulCost - s.covoitCost;
-    const costPct = s.seulCost > 0 ? (costSaved / s.seulCost * 100) : 0;
-    const kmSaved = s.seulKm - s.covoitKm;
-    const kmPct = s.seulKm > 0 ? (kmSaved / s.seulKm * 100) : 0;
-
-    doc.setFontSize(10);
-    const lines = [
-      `Personnes concernées par le covoiturage : ${s.nDrivers + s.nPassengers + s.nUnassigned} — ${s.nDrivers} conducteur·rices, ${s.nPassengers} passager·ères covoituré·es, ${s.nUnassigned} non intégré·es.`,
-      `Véhicules évités : ${s.carsAvoided} (${s.nCarPeople} personnes en voiture ramenées à ${s.nDrivers} véhicules réellement utilisés).`,
-      `CO2 : ${fmtKg(s.covoitCO2)} avec le covoiturage, contre ${fmtKg(s.seulCO2)} si chacun roulait seul — soit ${fmtKg(co2Saved)} évités (${co2Pct.toFixed(0)} %).`,
-      `Coût : ${fmtEuro(s.covoitCost)} avec le covoiturage, contre ${fmtEuro(s.seulCost)} si chacun roulait seul — soit ${fmtEuro(costSaved)} économisés (${costPct.toFixed(0)} %).`,
-      `Distance cumulée : ${fmtKm(s.covoitKm)} avec le covoiturage, contre ${fmtKm(s.seulKm)} si chacun roulait seul — soit ${fmtKm(kmSaved)} évités (${kmPct.toFixed(0)} %).`
-    ];
-    let y = 26;
-    lines.forEach(line => { doc.text(line, margin0, y); y += 6; });
-
-    const totalConcerned = s.perGroup.reduce((sum, g) => sum + g.nPeople, 0);
-    const modeRows = Object.entries(s.modeCount)
-      .sort((a, b) => b[1] - a[1])
-      .map(([mode, n]) => [mode, String(n), ((n / totalConcerned) * 100).toFixed(0) + ' %']);
-    doc.autoTable({
-      startY: y + 4,
-      margin: { left: margin0, right: pageW0 / 2 },
-      head: [['Mode de déplacement', 'Personnes', 'Part']],
-      body: modeRows,
-      styles: { fontSize: 7.5, cellPadding: 1.5 },
-      headStyles: { fillColor: [31, 41, 59] }
-    });
-
-    doc.autoTable({
-      startY: y + 4,
-      margin: { left: pageW0 / 2 + 4, right: margin0 },
-      head: [['Groupe', 'Personnes', 'Conduct.', 'CO2 seul', 'CO2 covoit.']],
-      body: s.perGroup.map(g => [String(g.groupe), String(g.nPeople), String(g.nDrivers), fmtKg(g.seulCO2), fmtKg(g.covoitCO2)]),
-      styles: { fontSize: 7.5, cellPadding: 1.5 },
-      headStyles: { fillColor: [31, 41, 59] }
-    });
+    drawGlobalSummaryPage(doc, computeGlobalSummary());
 
     for (let gi = 0; gi < groups.length; gi++) {
       const g = groups[gi];
       btn.textContent = `Export ${gi + 1}/${groups.length}…`;
-      const saved = savedTraceData.get(g);
-      const concerned = filterConcerned(saved.perPerson);
-
-      selectedGroup = g;
-      memberState = saved.memberStateSnapshot;
-      routeResult = { colorByDriver: saved.colorByDriver, colorByPassenger: saved.colorByPassenger };
-      unassignedIds = saved.unassignedIds;
-      renderMarkers();
-      routeLayerGroup.clearLayers();
-      saved.driverGeometries.forEach(dg => {
-        L.geoJSON(dg.geometry, { style: { color: dg.color, weight: 4, opacity: 0.85, dashArray: dg.usedFallback ? '7,7' : null } }).addTo(routeLayerGroup);
-      });
-      await new Promise(r => requestAnimationFrame(r));
-
-      const mapCanvas = await captureMapCanvas();
-      const mapImg = mapCanvas.toDataURL('image/png');
-
-      const pageW = doc.internal.pageSize.getWidth();
-      const pageH = doc.internal.pageSize.getHeight();
-      const margin = 10;
-      const contentTop = 22;
-      const groupTitle = `Covoiturage L1 STAPS — Groupe ${g} — arrivée : ${destinationLabelForGroup(g)}`;
-      const dateStr = new Date().toLocaleString('fr-FR');
-
-      // Page carte pleine page
-      doc.addPage();
-      drawPageHeader(doc, groupTitle, dateStr, pageW, margin);
-      const availW = pageW - margin * 2;
-      const availH = pageH - contentTop - margin;
-      let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
-      if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
-      doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
-
-      // Page données : tableau détaillé + bilan du groupe
-      doc.addPage();
-
-      if (concerned.length) {
-        const bilan = computeGroupBilan(concerned, saved.concernedTotals);
-        buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan);
-      } else {
-        drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
-        doc.setFontSize(9);
-        doc.text('Aucune personne concernée par le covoiturage dans ce groupe.', margin, contentTop + 6);
-      }
+      await appendGroupPagesToDoc(doc, g, savedTraceData.get(g));
     }
     doc.save('covoiturage-tous-groupes.pdf');
   } catch (err) {
@@ -2716,12 +2744,8 @@ async function regroupByGeography() {
     memberState = new Map();
     savedTraceData = new Map();
     failedImportRows = [];
-    routeResult = null;
-    unassignedIds = new Set();
-    lastTraceData = null;
     selectedGroup = null;
-    routeLayerGroup.clearLayers();
-    document.getElementById('route-results').innerHTML = '';
+    resetTraceState();
     updateRetryButton();
     initializeAllMemberStates();
 
@@ -2750,6 +2774,80 @@ document.getElementById('csv-input').addEventListener('change', async function (
 
 // Corps du traitement d'import, extrait dans sa propre fonction pour pouvoir être appelé
 // depuis withBusyLock() ci-dessus (verrou global, section 13) sans tout réindenter.
+// Construit les lignes exploitables à partir des lignes brutes du fichier et de la
+// correspondance de colonnes détectée — pure fonction (aucun accès réseau ni au DOM),
+// extraite de handleCsvImport ci-dessous pour la rendre lisible indépendamment du reste
+// de l'import. nSanitized : nombre de champs qui contenaient < ou > (retirés), pour
+// l'avertissement affiché à l'utilisateur.
+function parseImportRows(dataRows, colMap) {
+  const cell = (r, i) => (i !== undefined && r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
+  // Restriction sur les champs texte libre saisis par les répondant·es : les caractères
+  // < > sont retirés avant même d'entrer dans les données (en plus de l'échappement à
+  // l'affichage), pour éviter tout comportement imprévu si l'un d'eux apparaît par erreur.
+  let nSanitized = 0;
+  const cellClean = (r, i) => {
+    const raw = cell(r, i);
+    if (/[<>]/.test(raw)) nSanitized++;
+    return raw.replace(/[<>]/g, '');
+  };
+
+  const parsedRows = dataRows.map((r, i) => {
+    const useAlt = colMap.adressePrincipale !== undefined && cell(r, colMap.adressePrincipale) === 'Non (adresse temporaire)';
+    const placesN = parseInt(cell(r, colMap.places), 10);
+    // rue2/cp2/ville2 : l'autre adresse (celle non retenue par défaut), quand la personne
+    // en a renseigné deux — sert uniquement si "adresse la plus proche" est activé.
+    const rue2 = useAlt ? cellClean(r, colMap.rue1) : cellClean(r, colMap.rue2);
+    const cp2 = useAlt ? cell(r, colMap.cp1) : cell(r, colMap.cp2);
+    const ville2 = useAlt ? cellClean(r, colMap.ville1) : cellClean(r, colMap.ville2);
+    return {
+      id: i + 1,
+      groupe: cellClean(r, colMap.groupe) || 'N/A',
+      nom: (cellClean(r, colMap.prenom) + ' ' + cellClean(r, colMap.nom)).trim() || `Membre ${i + 1}`,
+      rue: useAlt ? cellClean(r, colMap.rue2) : cellClean(r, colMap.rue1),
+      cp: useAlt ? cell(r, colMap.cp2) : cell(r, colMap.cp1),
+      ville: useAlt ? cellClean(r, colMap.ville2) : cellClean(r, colMap.ville1),
+      rue2, cp2, ville2, has2: !!(rue2 && ville2),
+      deplacement: cell(r, colMap.deplacement),
+      deplacementSecours: cell(r, colMap.deplacementSecours),
+      situation: cell(r, colMap.situation),
+      places: Number.isFinite(placesN) && placesN > 0 ? placesN : undefined,
+      optIn: cell(r, colMap.optIn)
+    };
+  }).filter(r => r.rue && r.ville);
+
+  return { parsedRows, nSanitized };
+}
+
+// Construit les lignes finales (géolocalisées) à partir des lignes analysées et des
+// résultats de géocodage — pure fonction (aucun accès réseau ni au DOM), extraite de
+// handleCsvImport pour les mêmes raisons que parseImportRows ci-dessus.
+function buildFinalRows(parsedRows, geoResults) {
+  const finalRows = [];
+  const failedRows = [];
+  let failed = 0, lowConfidence = 0;
+  parsedRows.forEach(r => {
+    const g = geoResults[r._task1];
+    if (!g) { failed++; failedRows.push(r); return; }
+    if (typeof g.score === 'number' && g.score < GEOCODE_SCORE_THRESHOLD) lowConfidence++;
+
+    const row = {
+      id: r.id, groupe: r.groupe, nom: r.nom,
+      adresse: r.rue, ville: r.ville,
+      latPrimary: g.lat, lonPrimary: g.lon, adressePrimary: r.rue, villePrimary: r.ville,
+      lat: g.lat, lon: g.lon,
+      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
+      geocodeScore: (typeof g.score === 'number') ? g.score : undefined,
+      geocodeLabel: g.label
+    };
+    if (r.has2 && geoResults[r._task2]) {
+      const g2 = geoResults[r._task2];
+      row.lat2 = g2.lat; row.lon2 = g2.lon; row.adresse2 = r.rue2; row.ville2 = r.ville2;
+    }
+    finalRows.push(row);
+  });
+  return { finalRows, failedRows, failed, lowConfidence };
+}
+
 async function handleCsvImport(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   const subtitle = document.getElementById('subtitle');
@@ -2774,40 +2872,9 @@ async function handleCsvImport(file) {
   const usedFallbackColumns = detection.missing.length > 0;
   const colMap = usedFallbackColumns ? LEGACY_FIXED_COLUMNS : detection.mapping;
 
-  const cell = (r, i) => (i !== undefined && r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
-  // Restriction sur les champs texte libre saisis par les répondant·es : les caractères
-  // < > sont retirés avant même d'entrer dans les données (en plus de l'échappement à
-  // l'affichage), pour éviter tout comportement imprévu si l'un d'eux apparaît par erreur.
-  let nSanitized = 0;
-  const cellClean = (r, i) => {
-    const raw = cell(r, i);
-    if (/[<>]/.test(raw)) nSanitized++;
-    return raw.replace(/[<>]/g, '');
-  };
-
-  let parsedRows = dataRows.map((r, i) => {
-    const useAlt = colMap.adressePrincipale !== undefined && cell(r, colMap.adressePrincipale) === 'Non (adresse temporaire)';
-    const placesN = parseInt(cell(r, colMap.places), 10);
-    // rue2/cp2/ville2 : l'autre adresse (celle non retenue par défaut), quand la personne
-    // en a renseigné deux — sert uniquement si "adresse la plus proche" est activé.
-    const rue2 = useAlt ? cellClean(r, colMap.rue1) : cellClean(r, colMap.rue2);
-    const cp2 = useAlt ? cell(r, colMap.cp1) : cell(r, colMap.cp2);
-    const ville2 = useAlt ? cellClean(r, colMap.ville1) : cellClean(r, colMap.ville2);
-    return {
-      id: i + 1,
-      groupe: cell(r, colMap.groupe) || 'N/A',
-      nom: (cellClean(r, colMap.prenom) + ' ' + cellClean(r, colMap.nom)).trim() || `Membre ${i + 1}`,
-      rue: useAlt ? cellClean(r, colMap.rue2) : cellClean(r, colMap.rue1),
-      cp: useAlt ? cell(r, colMap.cp2) : cell(r, colMap.cp1),
-      ville: useAlt ? cellClean(r, colMap.ville2) : cellClean(r, colMap.ville1),
-      rue2, cp2, ville2, has2: !!(rue2 && ville2),
-      deplacement: cell(r, colMap.deplacement),
-      deplacementSecours: cell(r, colMap.deplacementSecours),
-      situation: cell(r, colMap.situation),
-      places: Number.isFinite(placesN) && placesN > 0 ? placesN : undefined,
-      optIn: cell(r, colMap.optIn)
-    };
-  }).filter(r => r.rue && r.ville);
+  const parsed = parseImportRows(dataRows, colMap);
+  let parsedRows = parsed.parsedRows;
+  const nSanitized = parsed.nSanitized;
 
   if (parsedRows.length === 0) {
     alert("Aucune ligne exploitable : colonnes rue et ville introuvables ou vides (structure du fichier non reconnue).");
@@ -2886,29 +2953,10 @@ async function handleCsvImport(file) {
     subtitle.textContent = `Géocodage en cours : ${done} / ${total}…`;
   });
 
-  const finalRows = [];
-  let failed = 0, lowConfidence = 0;
-  failedImportRows = [];
-  parsedRows.forEach(r => {
-    const g = geoResults[r._task1];
-    if (!g) { failed++; failedImportRows.push(r); return; }
-    if (typeof g.score === 'number' && g.score < GEOCODE_SCORE_THRESHOLD) lowConfidence++;
-
-    const row = {
-      id: r.id, groupe: r.groupe, nom: r.nom,
-      adresse: r.rue, ville: r.ville,
-      latPrimary: g.lat, lonPrimary: g.lon, adressePrimary: r.rue, villePrimary: r.ville,
-      lat: g.lat, lon: g.lon,
-      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
-      geocodeScore: (typeof g.score === 'number') ? g.score : undefined,
-      geocodeLabel: g.label
-    };
-    if (r.has2 && geoResults[r._task2]) {
-      const g2 = geoResults[r._task2];
-      row.lat2 = g2.lat; row.lon2 = g2.lon; row.adresse2 = r.rue2; row.ville2 = r.ville2;
-    }
-    finalRows.push(row);
-  });
+  const built = buildFinalRows(parsedRows, geoResults);
+  const finalRows = built.finalRows;
+  const failed = built.failed, lowConfidence = built.lowConfidence;
+  failedImportRows = built.failedRows;
 
   if (finalRows.length === 0) {
     alert("Aucune adresse n'a pu être géolocalisée (service de géocodage indisponible ou adresses non reconnues). Vérifiez la connexion, puis réessayez l'import.");
@@ -3043,11 +3091,7 @@ function excludePerson(id) {
   data = data.filter(d => d.id !== id);
   duplicateGroups = detectDuplicates(data);
   savedTraceData = new Map();
-  routeResult = null;
-  unassignedIds = new Set();
-  lastTraceData = null;
-  routeLayerGroup.clearLayers();
-  document.getElementById('route-results').innerHTML = '';
+  resetTraceState();
   initFromData();
   updateRetryButton();
   openFailedModal(); // rafraîchit le contenu de la modale déjà ouverte
@@ -3309,6 +3353,8 @@ const PROJECT_HISTORY = [
   { theme: "Documentation et lisibilité du code", text: "Nouvelle règle actée avec Valentin : chaque changement de code doit désormais s'accompagner d'une entrée dans cet historique (déjà la pratique jusqu'ici, maintenant formalisée comme un accord explicite). Passage de relecture complet du fichier (les ~3000 lignes, aucune ligne non lue) pour ajouter des repères de navigation, sans toucher au comportement : un sommaire en tête du script (30 sections numérotées, correspondance directe avec des bannières identiques plus bas, Ctrl+F le titre en MAJUSCULES pour y aller), et des bannières de section ajoutées à tous les endroits qui n'en avaient pas. Deux confusions préexistantes corrigées au passage (commentaires uniquement, aucun changement de comportement) : un commentaire décrivant l'algorithme de ramassage (construction + amélioration locale) était placé au-dessus de haversine() au lieu d'être au-dessus de traceRoutes() où il s'applique réellement ; et le commentaire décrivant la structure du formulaire d'import était au-dessus de regroupByGeography() (la recréation de groupes par proximité) au lieu d'être au-dessus du vrai gestionnaire d'import (l'écouteur sur csv-input) — les deux déplacés au bon endroit. Nouveau thème \"Documentation et lisibilité du code\" créé pour ce type d'entrée, aucun thème existant ne convenant." },
   { theme: "Données, import et géocodage", text: "Relecture complète demandée par Valentin (recherche d'erreurs et de code non pertinent) : quatre corrections appliquées. (1) MODE_COLORS n'avait pas d'entrée pour \"Vélo mécanique / Roller / Trottinette\", pourtant présent dans TRANSPORT_ICONS et TRANSPORT_PROFILES depuis son ajout — ce mode s'affichait sans couleur de fond (blanc) dans les exports PDF/PNG, contrairement à tous les autres ; couleur ajoutée. (2) Le bouton \"Réessayer les adresses non géolocalisées\" ne redemandait que l'adresse principale : une personne ayant fourni deux adresses et dont la principale avait échoué au premier import perdait alors définitivement sa deuxième adresse une fois récupérée (latPrimary/lonPrimary/lat2/lon2 jamais renseignés) — la case \"adresse la plus proche\" n'avait plus alors aucun effet pour elle, silencieusement. Corrigé : la reprise redemande maintenant aussi l'adresse secondaire si la personne en avait indiqué une, et reconstruit la ligne à l'identique de l'import initial ; applyClosestAddressPreference() est aussi rappelée après la reprise, ce qui ne l'était pas non plus. (3) Doublon détecté sur la détection de doublons (detectDuplicates) : la clé de regroupement (nom complet + adresse, sans ville) était incohérente avec la comparaison \"identique\" (qui inclut la ville) sans que ce soit documenté ; clarifié par un commentaire — Valentin a confirmé vouloir prénom + nom + adresse (déjà le cas : le champ `nom` contient \"Prénom Nom\" concaténés dès l'import, il n'existe pas de nom de famille séparé à ce stade) et a explicitement refusé d'y ajouter la ville ou le code postal (plus de risque de rater un vrai doublon que d'en signaler un faux) : comportement inchangé, juste rendu explicite. (4) Indentation corrigée à deux endroits (renderMemberList) où une ligne `lastTraceData = null;` avait un retrait à 2 espaces au lieu de 6 — sans effet fonctionnel. Nettoyage additionnel : une variable `originalSubtitle` non utilisée a été retirée du gestionnaire de reprise pendant sa réécriture. 6 tests ajoutés à tests_covoiturage.html pour ces quatre points (synchronisation des trois listes de modes de transport, doublons avec prénoms différents/villes différentes, préservation de la 2e adresse après reprise avec mock réseau) — 33/33 tests passent. Un point plus large signalé mais volontairement non traité (demande explicite d'en discuter avant) : aucun verrou global n'empêche de lancer une autre action longue (import, export groupé, recréation des groupes) pendant qu'une autre est déjà en cours." },
   { theme: "Interface et accessibilité", text: "Verrou global ajouté (point signalé lors de la relecture précédente, traitement demandé par Valentin) : withBusyLock() empêche désormais de lancer une action de fond pendant qu'une autre est déjà en cours — import de fichier, nouvel essai de géocodage, recréation des groupes par proximité, traçage d'un itinéraire, export (simple ou groupé), destination temporaire. Pendant une de ces actions, la barre latérale et la modale \"Adresses à vérifier et doublons\" (ses boutons Exclure mutent `data`) sont grisées et non cliquables (pointer-events: none, sans rien masquer) ; un clic sur une autre action protégée pendant ce temps affiche un message nommant l'action en cours plutôt que de s'exécuter. Delibérément PAS verrouillées : la modale de confirmation Oui/Non (c'est justement par elle que ces mêmes actions demandent une confirmation en cours de route — la verrouiller aurait bloqué l'application) et la carte (pan/zoom restent libres). Le verrou se libère toujours, y compris si l'action plante (try/finally). regroupByGeography() converti en fonction async (son setTimeout de 50ms, gardé pour laisser le navigateur peindre le bouton avant le calcul, devient un await sleep(50) équivalent) ; les corps du gestionnaire d'import (csv-input) et du bouton \"Réessayer\" ont été extraits dans des fonctions nommées (handleCsvImport, handleRetryGeocode) pour être appelables depuis le verrou sans tout réindenter. Détail cosmétique assumé, non corrigé : dans regroupByGeography() et exportAllGroups(), le verrou se pose une fraction de seconde avant que la boîte de confirmation (confirm()/askYesNo()) ne s'affiche — la barre latérale se grise donc légèrement avant que l'utilisateur ait confirmé, sans aucune conséquence fonctionnelle (le verrou se libère normalement si l'utilisateur annule). Validé par une simulation isolée (verrouillage mutuel, message d'attente correct, libération garantie même après une erreur dans l'action) portée en test dans tests_covoiturage.html — 34/34 tests passent." },
+  { theme: "Documentation et lisibilité du code", text: "Audit complet demandé par Valentin (points de faiblesse et pistes d'amélioration) : rapport donné en conversation, sans modification de code à ce stade. Points \"faciles\" ensuite traités dans la foulée avec son accord : (1) le champ `groupe` de l'import passe maintenant par cellClean() comme les autres champs texte (il y échappait, seul champ à ne pas avoir ses < > retirés) ; (2) les infobulles de la carte (renderMarkers) échappent maintenant nom/adresse/ville/groupe avec esc() avant insertion, cohérent avec le reste du projet (elles ne l'étaient pas, un `<br>` en dur dans le template le confirmant : Leaflet interprète bien le contenu des tooltips comme du HTML) ; (3) le bloc de 5 lignes qui invalide le trajet tracé (routeResult/unassignedIds/lastTraceData/routeLayerGroup/route-results), dupliqué identique à 11 endroits du fichier, extrait en resetTraceState(). Un point non traité : ajouter des hachages d'intégrité (SRI) aux 6 scripts CDN et à la feuille de style Leaflet — cette session n'a pas d'accès réseau vers cdnjs (politique de l'organisation), impossible de calculer de vrais hachages sans en inventer ; à faire par Valentin directement (cdnjs.com propose la balise avec SRI en un clic) ou dans une session avec accès réseau." },
+  { theme: "Algorithme de covoiturage", text: "Découpage de traceRoutes(), handleCsvImport() et exportAllGroups() en sous-fonctions plus courtes, demandé par Valentin sous réserve que ça n'entraîne aucun changement de comportement ni d'usage — vérifié à chaque étape (34/34 puis 38/38 tests, plus des vérifications isolées supplémentaires sur les fonctions extraites avant de les intégrer). Aucun nouveau fichier créé : tout reste dans carte_groupes_nancy.html, uniquement réorganisé. traceRoutes (436 → 222 lignes) : les 5 fonctions de l'algorithme de covoiturage, jusqu'ici imbriquées et donc non testables (bestInsertion, runSavingsConsolidation, l'étape de construction renommée insertPickupCandidates, localSearchImprove, et les métriques solo renommées computeSoloMetrics) sont sorties au niveau du fichier avec des paramètres explicites au lieu de variables capturées par fermeture — leur signature correspond maintenant exactement aux copies déjà dupliquées dans tests_covoiturage.html (bestInsertion et runSavingsConsolidation étaient déjà écrites ainsi côté tests, preuve qu'elles étaient bien testables sous cette forme). Le calcul des totaux resserrés et du détail par personne, jusqu'ici mêlé au reste, en sort aussi (buildTraceSummary). handleCsvImport (180 → 130 lignes) : extraction de parseImportRows (lignes brutes → lignes exploitables) et buildFinalRows (lignes exploitables + résultats de géocodage → lignes finales), toutes deux pures. exportAllGroups (166 → 79 lignes) : extraction de drawGlobalSummaryPage et appendGroupPagesToDoc, sur le même principe que les fonctions drawPageHeader/drawGroupBilan déjà présentes. tests_covoiturage.html mis à jour en conséquence : son ancien runConstruction (qui était une simplification approximative, pas une vraie copie) devient insertPickupCandidates avec la signature exacte du fichier principal ; parseImportRows et buildFinalRows dupliqués et testés (8 tests ajoutés au total, dont un a révélé une erreur dans le test lui-même — pas dans le code — repérée et corrigée avant validation)." },
 ];
 
 // ------------------------------------------------------------------
