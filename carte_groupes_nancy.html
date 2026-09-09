@@ -247,6 +247,7 @@
     <div class="upload-box">
       <label for="csv-input">Charger vos propres données (CSV)</label>
       <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" />
+      <p class="hint" id="import-status" role="status" aria-live="polite" style="margin:6px 0 0; font-weight:600; color:var(--ink);"></p>
       <p class="hint">Import direct de l'export du formulaire (xlsx ou csv), structure identique à votre modèle. Géocodage automatique des adresses.</p>
       <button class="retry-btn capture-hide-permanent" id="retry-geocode-btn" type="button">Réessayer les adresses non géolocalisées</button>
       <button class="retry-btn secondary capture-hide-permanent" id="view-failed-btn" type="button">Voir la liste</button>
@@ -2794,6 +2795,15 @@ document.getElementById('csv-input').addEventListener('change', async function (
 // extraite de handleCsvImport ci-dessous pour la rendre lisible indépendamment du reste
 // de l'import. nSanitized : nombre de champs qui contenaient < ou > (retirés), pour
 // l'avertissement affiché à l'utilisateur.
+// Affiche le message d'avancement de l'import à deux endroits à la fois : #subtitle (en
+// haut de la colonne, hors champ de vision une fois la colonne verrouillée pendant
+// l'import — voir withBusyLock, section 13 — puisqu'elle devient alors impossible à faire
+// défiler) et #import-status (juste sous le bouton "Parcourir", toujours visible).
+function setImportStatus(text) {
+  document.getElementById('subtitle').textContent = text;
+  document.getElementById('import-status').textContent = text;
+}
+
 function parseImportRows(dataRows, colMap) {
   const cell = (r, i) => (i !== undefined && r[i] !== undefined && r[i] !== null) ? String(r[i]).trim() : '';
   // Restriction sur les champs texte libre saisis par les répondant·es : les caractères
@@ -2920,7 +2930,7 @@ async function handleCsvImport(file) {
       `(question déplacée, réponse reformulée...).\n\n` +
       `Continuer quand même l'import ?`
     );
-    if (!proceed) { subtitle.textContent = originalSubtitle; return; }
+    if (!proceed) { setImportStatus(originalSubtitle); return; }
   }
 
   // Doublons probables (même nom + même rue) et codes postaux mal formés — signalés,
@@ -2963,9 +2973,9 @@ async function handleCsvImport(file) {
     }
   });
 
-  subtitle.textContent = `Géocodage en cours : 0 / ${geocodeTasks.length}…`;
+  setImportStatus(`Géocodage en cours : 0 / ${geocodeTasks.length}…`);
   const geoResults = await geocodeBatch(geocodeTasks, (done, total) => {
-    subtitle.textContent = `Géocodage en cours : ${done} / ${total}…`;
+    setImportStatus(`Géocodage en cours : ${done} / ${total}…`);
   });
 
   const built = buildFinalRows(parsedRows, geoResults);
@@ -2975,7 +2985,7 @@ async function handleCsvImport(file) {
 
   if (finalRows.length === 0) {
     alert("Aucune adresse n'a pu être géolocalisée (service de géocodage indisponible ou adresses non reconnues). Vérifiez la connexion, puis réessayez l'import.");
-    subtitle.textContent = originalSubtitle;
+    setImportStatus(originalSubtitle);
     return;
   }
 
@@ -2999,7 +3009,7 @@ async function handleCsvImport(file) {
   duplicateGroups = detectDuplicates(data);
   updateRetryButton();
   initializeAllMemberStates();
-  subtitle.textContent = `${data.length} adresses géolocalisées.`;
+  setImportStatus(`${data.length} adresses géolocalisées.`);
   initFromData();
 }
 
@@ -3032,9 +3042,9 @@ async function handleRetryGeocode() {
     }
   });
 
-  subtitle.textContent = `Nouvel essai : 0 / ${rowsToRetry.length}…`;
+  setImportStatus(`Nouvel essai : 0 / ${rowsToRetry.length}…`);
   const geoResults = await geocodeBatch(retryTasks, (done, total) => {
-    subtitle.textContent = `Nouvel essai : ${done} / ${total}…`;
+    setImportStatus(`Nouvel essai : ${done} / ${total}…`);
   });
 
   const recovered = [];
@@ -3065,7 +3075,7 @@ async function handleRetryGeocode() {
   applyClosestAddressPreference();
   duplicateGroups = detectDuplicates(data);
   initializeAllMemberStates();
-  subtitle.textContent = `${data.length} adresses géolocalisées.`;
+  setImportStatus(`${data.length} adresses géolocalisées.`);
   updateRetryButton();
   initFromData();
 
@@ -3380,6 +3390,7 @@ const PROJECT_HISTORY = [
   { theme: "Documentation et lisibilité du code", text: "Audit complet demandé par Valentin (points de faiblesse et pistes d'amélioration) : rapport donné en conversation, sans modification de code à ce stade. Points \"faciles\" ensuite traités dans la foulée avec son accord : (1) le champ `groupe` de l'import passe maintenant par cellClean() comme les autres champs texte (il y échappait, seul champ à ne pas avoir ses < > retirés) ; (2) les infobulles de la carte (renderMarkers) échappent maintenant nom/adresse/ville/groupe avec esc() avant insertion, cohérent avec le reste du projet (elles ne l'étaient pas, un `<br>` en dur dans le template le confirmant : Leaflet interprète bien le contenu des tooltips comme du HTML) ; (3) le bloc de 5 lignes qui invalide le trajet tracé (routeResult/unassignedIds/lastTraceData/routeLayerGroup/route-results), dupliqué identique à 11 endroits du fichier, extrait en resetTraceState(). Un point non traité : ajouter des hachages d'intégrité (SRI) aux 6 scripts CDN et à la feuille de style Leaflet — cette session n'a pas d'accès réseau vers cdnjs (politique de l'organisation), impossible de calculer de vrais hachages sans en inventer ; à faire par Valentin directement (cdnjs.com propose la balise avec SRI en un clic) ou dans une session avec accès réseau." },
   { theme: "Algorithme de covoiturage", text: "Découpage de traceRoutes(), handleCsvImport() et exportAllGroups() en sous-fonctions plus courtes, demandé par Valentin sous réserve que ça n'entraîne aucun changement de comportement ni d'usage — vérifié à chaque étape (34/34 puis 38/38 tests, plus des vérifications isolées supplémentaires sur les fonctions extraites avant de les intégrer). Aucun nouveau fichier créé : tout reste dans carte_groupes_nancy.html, uniquement réorganisé. traceRoutes (436 → 222 lignes) : les 5 fonctions de l'algorithme de covoiturage, jusqu'ici imbriquées et donc non testables (bestInsertion, runSavingsConsolidation, l'étape de construction renommée insertPickupCandidates, localSearchImprove, et les métriques solo renommées computeSoloMetrics) sont sorties au niveau du fichier avec des paramètres explicites au lieu de variables capturées par fermeture — leur signature correspond maintenant exactement aux copies déjà dupliquées dans tests_covoiturage.html (bestInsertion et runSavingsConsolidation étaient déjà écrites ainsi côté tests, preuve qu'elles étaient bien testables sous cette forme). Le calcul des totaux resserrés et du détail par personne, jusqu'ici mêlé au reste, en sort aussi (buildTraceSummary). handleCsvImport (180 → 130 lignes) : extraction de parseImportRows (lignes brutes → lignes exploitables) et buildFinalRows (lignes exploitables + résultats de géocodage → lignes finales), toutes deux pures. exportAllGroups (166 → 79 lignes) : extraction de drawGlobalSummaryPage et appendGroupPagesToDoc, sur le même principe que les fonctions drawPageHeader/drawGroupBilan déjà présentes. tests_covoiturage.html mis à jour en conséquence : son ancien runConstruction (qui était une simplification approximative, pas une vraie copie) devient insertPickupCandidates avec la signature exacte du fichier principal ; parseImportRows et buildFinalRows dupliqués et testés (8 tests ajoutés au total, dont un a révélé une erreur dans le test lui-même — pas dans le code — repérée et corrigée avant validation)." },
   { theme: "Algorithme de covoiturage", text: "Deux corrections demandées par Valentin sur le précochage des conducteur·rices. (1) Bug trouvé et corrigé : `memberState` (cases cochées/exclues/plan B, par personne) n'était jamais remis à zéro lors d'un import normal (contrairement à \"Recréer les groupes par proximité\", qui le faisait déjà). Comme l'identifiant d'une personne est simplement sa position dans le fichier (1, 2, 3…), réimporter un fichier corrigé dans la même session sans recharger la page faisait hériter silencieusement à la personne de la ligne N tout l'état (coché, décoché, exclu…) de celle qui occupait la ligne N lors de l'import précédent, même si ce n'était plus la même personne — d'où des précochages visiblement erronés sans cause apparente. Corrigé : `memberState` et `savedTraceData` sont remis à zéro au début de handleCsvImport, comme le fait déjà regroupByGeography(). Démontré par un scénario isolé avant/après le correctif. (2) Précochage visuel étendu aux personnes en \"Covoiturage en tant que Passager / Passagère\" : n'ayant pas de véhicule propre, elles ne peuvent jamais être conductrices et sont de toute façon ramassées automatiquement au traçage (déjà le cas avant ce changement, voir pickupCandidates) — leur case à cocher, jusqu'ici décochée et cliquable (ce qui laissait croire à tort qu'on pouvait les faire \"conduire\"), s'affiche maintenant cochée et désactivée : adhésion visuelle au trajet sans risque de créer une conductrice fictive sans véhicule. Redevient une case normale et cliquable si la personne est exclue, ou si son mode actif change (ex. bascule sur un plan B \"voiture individuelle\"). st.driver reste toujours à false pour ces personnes : aucun changement sur le calcul de l'itinéraire, uniquement l'affichage. Validé par des scénarios isolés (personne non exclue, personne exclue, mode voiture inchangé, bascule plan B) avant intégration ; pas de test permanent ajouté pour cette dernière vérification (logique d'affichage simple, déjà revérifiée à la main)." },
+  { theme: "Interface et accessibilité", text: "Confirmation de Valentin sur le correctif memberState de l'entrée précédente : le bug touchait en réalité TOUT premier import, pas seulement un réimport. Les 54 adresses de démonstration (aucune n'a de champ mode de déplacement) initialisent déjà memberState pour les id 1 à 54 dès le chargement de la page — donc le tout premier import réel d'une session était déjà, du point de vue du code, un \"deuxième jeu de données\" : quiconque occupait une des 54 premières lignes du fichier importé héritait à tort du driver=false des données de démo, quel que soit son vrai mode. Reproduit puis vérifié corrigé par un scénario isolé (personne #3 en \"Voiture individuelle\" dans les 54 premières lignes, correctement précochée après le correctif). Nouveau problème signalé dans la foulée : pendant un import, la colonne de gauche verrouillée (busy-lock, pointer-events: none) ne peut plus défiler — si la vue était descendue, impossible de remonter voir le compteur de progression (#subtitle, en haut de la colonne) avant la fin de l'import. Corrigé en dupliquant ce message à un second endroit toujours visible, juste sous le bouton \"Parcourir\" (nouvel élément #import-status) : une fonction setImportStatus() écrit désormais aux deux endroits à chaque mise à jour, remplaçant les écritures directes sur #subtitle dans handleCsvImport et handleRetryGeocode. Solution choisie parmi les deux proposées par Valentin (dupliquer l'affichage, plutôt que rendre la colonne défilable pendant le verrou) car nettement plus simple à implémenter sans risque de régression sur le verrou lui-même." },
 ];
 
 // ------------------------------------------------------------------
