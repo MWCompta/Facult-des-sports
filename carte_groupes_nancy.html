@@ -942,17 +942,32 @@ function renderMemberList() {
     const row = document.createElement('div');
     row.className = 'member-row' + (st.excluded ? ' excluded' : '');
 
+    // Une personne en "Covoiturage Passager/Passagère" n'a pas de véhicule propre : elle
+    // n'est jamais conductrice, et sera de toute façon ramassée par quelqu'un d'autre au
+    // traçage (voir pickupCandidates dans traceRoutes), que cette case soit cochée ou non.
+    // On l'affiche donc cochée-désactivée — pour qu'elle apparaisse visuellement comme
+    // faisant partie du trajet — plutôt que décochée-cliquable, ce qui laissait croire à
+    // tort qu'on pouvait la faire "conduire" en cochant la case (elle n'a pas de voiture).
+    const isPassagerSansVehicule = !st.excluded && activeTransportMode(m) === "Covoiturage en tant que Passager / Passagère";
+
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = st.driver;
-    cb.disabled = st.excluded;
-    cb.setAttribute('aria-label', `${m.nom} conduit`);
-    cb.addEventListener('change', () => {
-      st.driver = cb.checked;
-      resetTraceState();
-      renderMarkers();
-      updateRouteStatus();
-    });
+    if (isPassagerSansVehicule) {
+      cb.checked = true;
+      cb.disabled = true;
+      cb.title = 'Covoiture en tant que passager·ère : sera ramassé·e par un·e conducteur·rice, rien à cocher ici.';
+      cb.setAttribute('aria-label', `${m.nom} covoiture en tant que passager·ère (sera ramassé·e)`);
+    } else {
+      cb.checked = st.driver;
+      cb.disabled = st.excluded;
+      cb.setAttribute('aria-label', `${m.nom} conduit`);
+      cb.addEventListener('change', () => {
+        st.driver = cb.checked;
+        resetTraceState();
+        renderMarkers();
+        updateRouteStatus();
+      });
+    }
 
     const label = document.createElement('div');
     label.className = 'member-label';
@@ -2970,6 +2985,15 @@ async function handleCsvImport(file) {
   if (lowConfidence > 0) warnings.push(`${lowConfidence} adresse(s) géolocalisée(s) avec une confiance faible (contour orange sur la carte en vue générale) — à vérifier.`);
   if (warnings.length) alert(warnings.join('\n'));
 
+  // Nouvel import : repart d'un état vierge. Les id sont juste la position de la ligne
+  // dans le fichier (1, 2, 3…) — sans ce nettoyage, une personne du nouvel import qui
+  // hérite du même id qu'une personne d'un import précédent (fichier réimporté après
+  // correction, par exemple) récupérait silencieusement son état (coché/décoché/exclu),
+  // faussant le précochage sans qu'aucune erreur ne soit visible. Même nettoyage que
+  // regroupByGeography() lors d'un changement structurel de `data`.
+  memberState = new Map();
+  savedTraceData = new Map();
+
   data = finalRows;
   applyClosestAddressPreference();
   duplicateGroups = detectDuplicates(data);
@@ -3355,6 +3379,7 @@ const PROJECT_HISTORY = [
   { theme: "Interface et accessibilité", text: "Verrou global ajouté (point signalé lors de la relecture précédente, traitement demandé par Valentin) : withBusyLock() empêche désormais de lancer une action de fond pendant qu'une autre est déjà en cours — import de fichier, nouvel essai de géocodage, recréation des groupes par proximité, traçage d'un itinéraire, export (simple ou groupé), destination temporaire. Pendant une de ces actions, la barre latérale et la modale \"Adresses à vérifier et doublons\" (ses boutons Exclure mutent `data`) sont grisées et non cliquables (pointer-events: none, sans rien masquer) ; un clic sur une autre action protégée pendant ce temps affiche un message nommant l'action en cours plutôt que de s'exécuter. Delibérément PAS verrouillées : la modale de confirmation Oui/Non (c'est justement par elle que ces mêmes actions demandent une confirmation en cours de route — la verrouiller aurait bloqué l'application) et la carte (pan/zoom restent libres). Le verrou se libère toujours, y compris si l'action plante (try/finally). regroupByGeography() converti en fonction async (son setTimeout de 50ms, gardé pour laisser le navigateur peindre le bouton avant le calcul, devient un await sleep(50) équivalent) ; les corps du gestionnaire d'import (csv-input) et du bouton \"Réessayer\" ont été extraits dans des fonctions nommées (handleCsvImport, handleRetryGeocode) pour être appelables depuis le verrou sans tout réindenter. Détail cosmétique assumé, non corrigé : dans regroupByGeography() et exportAllGroups(), le verrou se pose une fraction de seconde avant que la boîte de confirmation (confirm()/askYesNo()) ne s'affiche — la barre latérale se grise donc légèrement avant que l'utilisateur ait confirmé, sans aucune conséquence fonctionnelle (le verrou se libère normalement si l'utilisateur annule). Validé par une simulation isolée (verrouillage mutuel, message d'attente correct, libération garantie même après une erreur dans l'action) portée en test dans tests_covoiturage.html — 34/34 tests passent." },
   { theme: "Documentation et lisibilité du code", text: "Audit complet demandé par Valentin (points de faiblesse et pistes d'amélioration) : rapport donné en conversation, sans modification de code à ce stade. Points \"faciles\" ensuite traités dans la foulée avec son accord : (1) le champ `groupe` de l'import passe maintenant par cellClean() comme les autres champs texte (il y échappait, seul champ à ne pas avoir ses < > retirés) ; (2) les infobulles de la carte (renderMarkers) échappent maintenant nom/adresse/ville/groupe avec esc() avant insertion, cohérent avec le reste du projet (elles ne l'étaient pas, un `<br>` en dur dans le template le confirmant : Leaflet interprète bien le contenu des tooltips comme du HTML) ; (3) le bloc de 5 lignes qui invalide le trajet tracé (routeResult/unassignedIds/lastTraceData/routeLayerGroup/route-results), dupliqué identique à 11 endroits du fichier, extrait en resetTraceState(). Un point non traité : ajouter des hachages d'intégrité (SRI) aux 6 scripts CDN et à la feuille de style Leaflet — cette session n'a pas d'accès réseau vers cdnjs (politique de l'organisation), impossible de calculer de vrais hachages sans en inventer ; à faire par Valentin directement (cdnjs.com propose la balise avec SRI en un clic) ou dans une session avec accès réseau." },
   { theme: "Algorithme de covoiturage", text: "Découpage de traceRoutes(), handleCsvImport() et exportAllGroups() en sous-fonctions plus courtes, demandé par Valentin sous réserve que ça n'entraîne aucun changement de comportement ni d'usage — vérifié à chaque étape (34/34 puis 38/38 tests, plus des vérifications isolées supplémentaires sur les fonctions extraites avant de les intégrer). Aucun nouveau fichier créé : tout reste dans carte_groupes_nancy.html, uniquement réorganisé. traceRoutes (436 → 222 lignes) : les 5 fonctions de l'algorithme de covoiturage, jusqu'ici imbriquées et donc non testables (bestInsertion, runSavingsConsolidation, l'étape de construction renommée insertPickupCandidates, localSearchImprove, et les métriques solo renommées computeSoloMetrics) sont sorties au niveau du fichier avec des paramètres explicites au lieu de variables capturées par fermeture — leur signature correspond maintenant exactement aux copies déjà dupliquées dans tests_covoiturage.html (bestInsertion et runSavingsConsolidation étaient déjà écrites ainsi côté tests, preuve qu'elles étaient bien testables sous cette forme). Le calcul des totaux resserrés et du détail par personne, jusqu'ici mêlé au reste, en sort aussi (buildTraceSummary). handleCsvImport (180 → 130 lignes) : extraction de parseImportRows (lignes brutes → lignes exploitables) et buildFinalRows (lignes exploitables + résultats de géocodage → lignes finales), toutes deux pures. exportAllGroups (166 → 79 lignes) : extraction de drawGlobalSummaryPage et appendGroupPagesToDoc, sur le même principe que les fonctions drawPageHeader/drawGroupBilan déjà présentes. tests_covoiturage.html mis à jour en conséquence : son ancien runConstruction (qui était une simplification approximative, pas une vraie copie) devient insertPickupCandidates avec la signature exacte du fichier principal ; parseImportRows et buildFinalRows dupliqués et testés (8 tests ajoutés au total, dont un a révélé une erreur dans le test lui-même — pas dans le code — repérée et corrigée avant validation)." },
+  { theme: "Algorithme de covoiturage", text: "Deux corrections demandées par Valentin sur le précochage des conducteur·rices. (1) Bug trouvé et corrigé : `memberState` (cases cochées/exclues/plan B, par personne) n'était jamais remis à zéro lors d'un import normal (contrairement à \"Recréer les groupes par proximité\", qui le faisait déjà). Comme l'identifiant d'une personne est simplement sa position dans le fichier (1, 2, 3…), réimporter un fichier corrigé dans la même session sans recharger la page faisait hériter silencieusement à la personne de la ligne N tout l'état (coché, décoché, exclu…) de celle qui occupait la ligne N lors de l'import précédent, même si ce n'était plus la même personne — d'où des précochages visiblement erronés sans cause apparente. Corrigé : `memberState` et `savedTraceData` sont remis à zéro au début de handleCsvImport, comme le fait déjà regroupByGeography(). Démontré par un scénario isolé avant/après le correctif. (2) Précochage visuel étendu aux personnes en \"Covoiturage en tant que Passager / Passagère\" : n'ayant pas de véhicule propre, elles ne peuvent jamais être conductrices et sont de toute façon ramassées automatiquement au traçage (déjà le cas avant ce changement, voir pickupCandidates) — leur case à cocher, jusqu'ici décochée et cliquable (ce qui laissait croire à tort qu'on pouvait les faire \"conduire\"), s'affiche maintenant cochée et désactivée : adhésion visuelle au trajet sans risque de créer une conductrice fictive sans véhicule. Redevient une case normale et cliquable si la personne est exclue, ou si son mode actif change (ex. bascule sur un plan B \"voiture individuelle\"). st.driver reste toujours à false pour ces personnes : aucun changement sur le calcul de l'itinéraire, uniquement l'affichage. Validé par des scénarios isolés (personne non exclue, personne exclue, mode voiture inchangé, bascule plan B) avant intégration ; pas de test permanent ajouté pour cette dernière vérification (logique d'affichage simple, déjà revérifiée à la main)." },
 ];
 
 // ------------------------------------------------------------------
