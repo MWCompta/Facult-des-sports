@@ -300,8 +300,57 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
 <script>
+// ====================================================================
+// SOMMAIRE DE CE FICHIER — pour se repérer dans les ~2800 lignes de JS
+// qui suivent. Chaque titre ci-dessous existe tel quel comme bannière de
+// section plus bas : faites Ctrl+F sur le titre en MAJUSCULES pour y aller
+// directement. Les sections sont dans l'ordre où elles apparaissent.
+//
+//  1. DONNÉES DE DÉMONSTRATION — le tableau `data` de départ (remplacé dès
+//     qu'un fichier est importé).
+//  2. DESTINATIONS ET BASSINS (NANCY / ÉPINAL) — quel groupe part vers
+//     quelle destination, et la mécanique de destination temporaire.
+//  3. CONFIGURATION DU GÉOCODAGE — réglages du service d'adresse (IGN).
+//  4. ICÔNES, COULEURS ET PROFILS PAR MODE DE TRANSPORT — CO2/coût par
+//     mode, et les règles qui décident qui peut conduire/être ramassé.
+//  5. CARTE ET FONDS DE CARTE — initialisation Leaflet, fonds disponibles.
+//  6. ÉTAT GLOBAL PARTAGÉ — variables lues/modifiées dans tout le fichier.
+//  7. AFFICHAGE DES MARQUEURS ET DES GROUPES SUR LA CARTE.
+//  8. PANNEAU « MEMBRES DU GROUPE » — liste, cases à cocher, icônes.
+//  9. CALCUL D'ITINÉRAIRE — UTILITAIRE DE DISTANCE (haversine).
+// 10. RECRÉATION DES GROUPES PAR PROXIMITÉ — k-means équilibré (utilisé
+//     par le bouton "Recréer les groupes par proximité", section 20).
+// 11. SERVICE DE ROUTAGE (OSRM) ET FORMATAGE — appels réseau d'itinéraire,
+//     fonctions fmtMin/fmtKm/fmtKg/fmtEuro, échappement HTML (esc).
+// 12. ALGORITHME DE COVOITURAGE — TRAÇAGE D'UN GROUPE — le cœur de l'outil
+//     (fonction traceRoutes : qui conduit, qui ramasse qui, calcul réel).
+// 13. ÉVÉNEMENTS — BASCULES ET ACTIONS DU PANNEAU GROUPE.
+// 14. EXPORT PDF — FONCTIONS PARTAGÉES — bilan chiffré, mise en page.
+// 15. EXPORT PDF — GÉNÉRATION DU DOCUMENT (exportAsPdf).
+// 16. EXPORT PNG (secours) — utilisé si la génération du PDF échoue.
+// 17. EXPORT GROUPÉ — BILAN GLOBAL ET TOUS LES GROUPES.
+// 18. PRÉFÉRENCES D'ADRESSE ET INITIALISATION DE LA VUE.
+// 19. GÉOCODAGE — APPELS RÉSEAU — adresse texte -> lat/lon (IGN).
+// 20. LECTURE DE FICHIER — xlsx (SheetJS) / csv (PapaParse), lignes brutes.
+// 21. DÉTECTION DES COLONNES PAR EN-TÊTE — reconnaît les colonnes du
+//     fichier importé par mot-clé plutôt que par position fixe.
+// 22. RECRÉATION DES GROUPES — ACTION « POUR L'ANNÉE PROCHAINE » — le
+//     bouton qui déclenche le k-means de la section 10.
+// 23. IMPORT — LECTURE DU FICHIER CHOISI PAR L'UTILISATEUR — remplace
+//     `data`, lance le géocodage de toutes les adresses.
+// 24. DOUBLONS ET QUALITÉ DES DONNÉES IMPORTÉES.
+// 25. BOÎTE DE CONFIRMATION PERSONNALISÉE (Oui/Non) — remplace le
+//     confirm() du navigateur quand les libellés des boutons comptent.
+// 26. MODALE « ADRESSES À VÉRIFIER ET DOUBLONS ».
+// 27. HISTORIQUE DU PROJET — DONNÉES — le journal des décisions
+//     (PROJECT_HISTORY) : y ajouter une entrée à chaque changement de code.
+// 28. HISTORIQUE DU PROJET — AFFICHAGE — construit la fenêtre "📋".
+// 29. ACCESSIBILITÉ CLAVIER DES MODALES — Échap, piège de focus (Tab).
+// 30. DÉMARRAGE DE L'APPLICATION — ce qui lance tout au chargement.
+// ====================================================================
+
 // ------------------------------------------------------------------
-// DONNÉES DE DÉMONSTRATION
+// 1. DONNÉES DE DÉMONSTRATION
 // À remplacer par les données réelles, ou à charger via le panneau CSV
 // (mêmes champs : id, groupe, nom, adresse, ville, lat, lon, [places])
 // ------------------------------------------------------------------
@@ -362,6 +411,11 @@ let data = [
   {id:54, groupe:20, nom:"Romane", adresse:"33 Rue Victor Hugo", ville:"Épinal", lat:48.175891, lon:6.453204}
 ];
 
+// ------------------------------------------------------------------
+// 2. DESTINATIONS ET BASSINS (NANCY / ÉPINAL)
+// Chaque groupe part vers l'une des deux facultés (déterminé par son numéro), avec la
+// possibilité de définir une destination temporaire pour un groupe ou tout un bassin.
+// ------------------------------------------------------------------
 // Destination unique de toutes les routes de covoiturage
 const DESTINATION_NANCY = { lat: 48.6671246, lon: 6.1565395 };
 const DESTINATION_NANCY_LABEL = "Faculté des sports — 30 Rue du Jardin-Botanique, Villers-lès-Nancy";
@@ -407,13 +461,24 @@ function destinationLabelForGroup(g) {
   return isEpinalGroup(g) ? "Épinal" : "Nancy";
 }
 
-// Géocodage (Géoplateforme IGN — remplace l'ancienne API Adresse BAN, décommissionnée
-// fin janvier 2026). Endpoint public, sans clé, limité à 50 req/s/IP.
+// ------------------------------------------------------------------
+// 3. CONFIGURATION DU GÉOCODAGE
+// Les fonctions qui utilisent ces réglages sont plus bas, section 19 (GÉOCODAGE — APPELS
+// RÉSEAU) — regroupées ici car ce sont de simples constantes ajustables.
+// Géoplateforme IGN — remplace l'ancienne API Adresse BAN, décommissionnée
+// fin janvier 2026. Endpoint public, sans clé, limité à 50 req/s/IP.
+// ------------------------------------------------------------------
 const GEOCODE_SCORE_THRESHOLD = 0.5; // en dessous : adresse à vérifier manuellement
 const GEOCODE_CONCURRENCY = 8;       // requêtes en parallèle
 const GEOCODE_MAX_PER_SECOND = 8;    // marge large sous la limite documentée (~50/s) du service
 const GEOCODE_MAX_RETRIES = 2;       // nouvelles tentatives avant d'abandonner une adresse
 
+// ------------------------------------------------------------------
+// 4. ICÔNES, COULEURS ET PROFILS PAR MODE DE TRANSPORT
+// Regroupe tout ce qui dépend du mode de déplacement d'une personne : icône affichée,
+// couleur de fond (export), profil CO2/coût/vitesse (TRANSPORT_PROFILES plus bas), et les
+// règles qui décident qui peut conduire, être ramassé, ou compte comme "en voiture".
+// ------------------------------------------------------------------
 // Icônes par mode de déplacement — intitulés exacts du formulaire réel (vérifiés sur
 // un export de test contenant de vraies réponses).
 // Couleur de fond par mode dans les exports — les trois variantes "en voiture" partagent
@@ -534,7 +599,7 @@ const DEFAULT_CAPACITY = 4;         // places par conducteur si aucune colonne "
 const MIN_CAR_PER_GROUP = 3;
 
 // ------------------------------------------------------------------
-// CARTE ET FONDS DISPONIBLES (sans clé API)
+// 5. CARTE ET FONDS DE CARTE (sans clé API)
 // ------------------------------------------------------------------
 // renderer: L.canvas() — le rendu vectoriel par défaut de Leaflet est du SVG, que
 // html2canvas capture mal (positions décalées ou absentes) dans les panneaux à
@@ -608,6 +673,11 @@ async function captureMapCanvas() {
   }
 }
 
+// ------------------------------------------------------------------
+// 6. ÉTAT GLOBAL PARTAGÉ
+// Variables lues et modifiées un peu partout dans le fichier — c'est la "mémoire" de
+// l'application (quel groupe est affiché, qui est coché comme conducteur·rice, etc.).
+// ------------------------------------------------------------------
 let markersLayer = L.layerGroup().addTo(map);
 let routeLayerGroup = L.layerGroup().addTo(map);
 let selectedGroup = null; // null = vue générale
@@ -665,6 +735,9 @@ L.marker([DESTINATION_EPINAL.lat, DESTINATION_EPINAL.lon], { icon: iconForColor(
   .bindTooltip(DESTINATION_EPINAL_LABEL, { sticky: true, direction: 'top' })
   .addTo(map);
 
+// ------------------------------------------------------------------
+// 7. AFFICHAGE DES MARQUEURS ET DES GROUPES SUR LA CARTE
+// ------------------------------------------------------------------
 function renderMarkers() {
   markersLayer.clearLayers();
   const inGroup = selectedGroup !== null;
@@ -830,6 +903,12 @@ function invalidateAfterDestChange(affectedGroups) {
   fitToData();
 }
 
+// ------------------------------------------------------------------
+// 8. PANNEAU « MEMBRES DU GROUPE »
+// Liste des personnes du groupe affiché, avec pour chacune : case "conduit", icône de
+// mode de transport (cliquable pour basculer sur le plan B), bouton d'exclusion, et
+// bouton "forcer dans le covoiturage" pour les modes normalement non éligibles.
+// ------------------------------------------------------------------
 function renderMemberList() {
   const panelEl = document.getElementById('member-panel');
   if (selectedGroup === null) {
@@ -965,12 +1044,10 @@ function updateRouteStatus() {
 }
 
 // ------------------------------------------------------------------
-// CALCUL D'ITINÉRAIRE
-// Construction gloutonne : à chaque étape, insertion la moins émettrice de CO2
-// (distance ajoutée) parmi celles dont le détour reste sous MAX_DETOUR_SECONDS
-// et dont la capacité du conducteur n'est pas dépassée.
-// Amélioration locale ensuite : relocalisation d'un passager si cela réduit la
-// distance totale, toujours sous les mêmes contraintes.
+// 9. CALCUL D'ITINÉRAIRE — UTILITAIRE DE DISTANCE
+// haversine() calcule une distance à vol d'oiseau (approximation utilisée pour le repli
+// quand le service de routage est indisponible, et pour le k-means de la section 10) —
+// fonction générique appelée depuis plusieurs endroits du fichier.
 // ------------------------------------------------------------------
 function haversine(a, b) {
   const R = 6371;
@@ -982,7 +1059,9 @@ function haversine(a, b) {
 }
 
 // ------------------------------------------------------------------
-// Recréation des groupes par proximité géographique (k-means équilibré en taille).
+// 10. RECRÉATION DES GROUPES PAR PROXIMITÉ GÉOGRAPHIQUE (k-means équilibré en taille).
+// Utilisé par regroupByGeography() (section 22), déclenché par le bouton "Recréer les
+// groupes par proximité".
 // ------------------------------------------------------------------
 
 // Choisit k centroïdes de départ, espacés (k-means++) : réduit le risque de mauvais
@@ -1110,6 +1189,12 @@ function clusterWithRestarts(points, k, targetSizes, restarts, minCarPerGroup) {
   return best;
 }
 
+// ------------------------------------------------------------------
+// 11. SERVICE DE ROUTAGE (OSRM) ET FORMATAGE
+// Appels au service public OSRM (calcul de temps/distance réels par la route), et petites
+// fonctions de formatage (fmtMin/fmtKm/fmtKg/fmtEuro) et d'échappement HTML (esc) utilisées
+// partout dans l'affichage et les exports.
+// ------------------------------------------------------------------
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 async function fetchDurationMatrix(points, profile) {
@@ -1147,6 +1232,18 @@ function esc(s) {
   }[c]));
 }
 
+// ------------------------------------------------------------------
+// 12. ALGORITHME DE COVOITURAGE — TRAÇAGE D'UN GROUPE
+// Le cœur de l'outil : à partir des cases cochées du groupe affiché, décide qui conduit
+// réellement, qui ramasse qui, et calcule temps/distance/CO2/coût réels par la route.
+// Trois étapes successives dans traceRoutes() : (1) consolidation par économies (Clarke
+// & Wright) — réduit le nombre de conducteur·rices cochées en fusionnant les trajets
+// quand c'est avantageux ; (2) construction gloutonne — insère les passager·ères candidat·es
+// restant·es, à chaque étape dans l'insertion la moins coûteuse en distance parmi celles
+// dont le détour reste sous MAX_DETOUR_SECONDS et la capacité du conducteur non dépassée ;
+// (3) amélioration locale — relocalise un passager si cela réduit la distance totale.
+// Plusieurs essais randomisés (RESTARTS) sont comparés, le meilleur est conservé.
+// ------------------------------------------------------------------
 async function traceRoutes() {
   const members = data.filter(d => String(d.groupe) === String(selectedGroup));
   const enriched = members.map(d => Object.assign({}, d, memberState.get(d.id) || { driver: false, excluded: false, useBackup: false, forceInclude: false }));
@@ -1615,6 +1712,11 @@ function renderResults(driverInfos, totals, usedFallback, unassignedNames) {
   container.appendChild(table);
 }
 
+// ------------------------------------------------------------------
+// 13. ÉVÉNEMENTS — BASCULES ET ACTIONS DU PANNEAU GROUPE
+// Branchement des boutons/cases de la barre latérale sur l'état global (section 6) et les
+// fonctions d'affichage/calcul déjà définies plus haut.
+// ------------------------------------------------------------------
 document.getElementById('btn-general').addEventListener('click', () => { viewFilter = 'all'; selectGroup(null); });
 document.getElementById('btn-nancy').addEventListener('click', () => { viewFilter = 'nancy'; selectGroup(null); });
 document.getElementById('btn-epinal').addEventListener('click', () => { viewFilter = 'epinal'; selectGroup(null); });
@@ -1717,6 +1819,12 @@ document.getElementById('reset-group-btn').addEventListener('click', () => {
   updateRouteStatus();
 });
 
+// ------------------------------------------------------------------
+// 14. EXPORT PDF — FONCTIONS PARTAGÉES
+// Éléments d'interface à masquer pendant une capture, bilan chiffré d'un groupe, mise en
+// page adaptative (LAYOUT_LEVELS) — utilisés par exportAsPdf (section 15) et par l'export
+// groupé (section 17).
+// ------------------------------------------------------------------
 function captureControlsToHide() {
   return [
     map.zoomControl && map.zoomControl.getContainer(),
@@ -1938,6 +2046,13 @@ function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, co
   }
 }
 
+// ------------------------------------------------------------------
+// 15. EXPORT PDF — GÉNÉRATION DU DOCUMENT
+// Page 1 : carte pleine page. Page 2 : tableau détaillé par personne + bilan du groupe.
+// Utilisée pour l'export d'un seul groupe (ou de la vue générale) via le bouton
+// "Exporter (PDF)" — voir aussi l'export groupé (section 17), qui appelle des fonctions
+// similaires pour construire un document unique avec tous les groupes.
+// ------------------------------------------------------------------
 async function exportAsPdf(label) {
   const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if (typeof jsPDFCtor !== 'function') throw new Error('jsPDF indisponible');
@@ -1980,6 +2095,12 @@ async function exportAsPdf(label) {
   doc.save(`covoiturage-${label}.pdf`);
 }
 
+// ------------------------------------------------------------------
+// 16. EXPORT PNG (secours)
+// Prend une capture d'écran de toute l'application (carte + panneau) si la génération du
+// PDF échoue (bibliothèque indisponible, erreur inattendue) — voir le bouton "capture-btn"
+// plus bas, qui tente le PDF puis se rabat sur cette fonction.
+// ------------------------------------------------------------------
 async function exportAsPng(label) {
   const toHide = captureControlsToHide();
   toHide.forEach(el => el.classList.add('capture-hide'));
@@ -2029,6 +2150,12 @@ async function exportAsPng(label) {
   }
 }
 
+// ------------------------------------------------------------------
+// 17. EXPORT GROUPÉ — BILAN GLOBAL ET TOUS LES GROUPES
+// Déclenché par "Exporter tous les groupes tracés" : trace automatiquement chaque groupe
+// (comme un clic sur "Tracer l'itinéraire" le ferait pour chacun), puis construit un seul
+// PDF avec une page de bilan global suivie des pages de chaque groupe.
+// ------------------------------------------------------------------
 // Bilan global — agrège tous les groupes déjà tracés (mémorisés dans savedTraceData).
 function computeGlobalSummary() {
   let seulCO2 = 0, covoitCO2 = 0, seulCost = 0, covoitCost = 0, seulKm = 0, covoitKm = 0;
@@ -2262,6 +2389,9 @@ document.getElementById('capture-btn').addEventListener('click', async () => {
   }
 });
 
+// ------------------------------------------------------------------
+// 18. PRÉFÉRENCES D'ADRESSE ET INITIALISATION DE LA VUE
+// ------------------------------------------------------------------
 // Pour les personnes ayant renseigné deux adresses (adresse temporaire), choisit celle la
 // plus proche de leur destination (Nancy ou Épinal selon leur groupe) si l'option est
 // activée ; sinon utilise l'adresse retenue par défaut (celle indiquée par la colonne I).
@@ -2305,7 +2435,7 @@ function initFromData() {
 }
 
 // ------------------------------------------------------------------
-// GÉOCODAGE — Géoplateforme IGN (adresse texte -> lat/lon)
+// 19. GÉOCODAGE — APPELS RÉSEAU — Géoplateforme IGN (adresse texte -> lat/lon)
 // ------------------------------------------------------------------
 async function geocodeAddress(query, postcode) {
   let url = `https://data.geopf.fr/geocodage/search/?q=${encodeURIComponent(query)}&limit=1`;
@@ -2368,7 +2498,7 @@ async function geocodeBatch(rows, onProgress) {
 }
 
 // ------------------------------------------------------------------
-// LECTURE DE FICHIER — xlsx (SheetJS) ou csv (PapaParse), en lignes brutes
+// 20. LECTURE DE FICHIER — xlsx (SheetJS) ou csv (PapaParse), en lignes brutes
 // ------------------------------------------------------------------
 function readXlsxRows(file) {
   return new Promise((resolve, reject) => {
@@ -2392,7 +2522,7 @@ function readCsvRows(file) {
 }
 
 // ------------------------------------------------------------------
-// DÉTECTION DES COLONNES — par mot-clé dans l'en-tête plutôt que par position fixe.
+// 21. DÉTECTION DES COLONNES PAR EN-TÊTE — par mot-clé plutôt que par position fixe.
 // Jusqu'ici l'import supposait un ordre de colonnes figé (C=Nom, D=Prénom, E=Groupe,
 // F/G/H=adresse principale, I=bascule adresse principale/temporaire, J/K/L=adresse
 // secondaire, M=mode de déplacement, N=places, O=stabilité abonnement, P=plan B,
@@ -2474,9 +2604,10 @@ function detectColumnMapping(headerRow) {
 }
 
 // ------------------------------------------------------------------
-// IMPORT — structure du formulaire Google Forms (export Sheets/xlsx), colonnes
-// identifiées par mot-clé d'en-tête (voir ci-dessus) plutôt que par position fixe.
-// Remplace les données par un fichier fourni par l'utilisateur, avec géocodage.
+// 22. RECRÉATION DES GROUPES — ACTION « POUR L'ANNÉE PROCHAINE »
+// Déclenchée par le bouton du même nom : réutilise le k-means équilibré de la section 10
+// pour redistribuer entièrement les personnes actuellement chargées en nouveaux groupes
+// par proximité géographique (Nancy et Épinal restent deux populations séparées).
 // ------------------------------------------------------------------
 function regroupByGeography() {
   if (data.length === 0) { alert('Aucune donnée chargée à regrouper.'); return; }
@@ -2563,6 +2694,12 @@ function regroupByGeography() {
 }
 document.getElementById('regroup-btn').addEventListener('click', regroupByGeography);
 
+// ------------------------------------------------------------------
+// 23. IMPORT — LECTURE DU FICHIER CHOISI PAR L'UTILISATEUR
+// Structure attendue : celle du formulaire Google Forms (export Sheets/xlsx), avec les
+// colonnes repérées par mot-clé d'en-tête (section 21, repli sur position fixe si besoin).
+// Remplace entièrement `data` par le contenu du fichier, après géocodage de chaque adresse.
+// ------------------------------------------------------------------
 document.getElementById('csv-input').addEventListener('change', async function (e) {
   const file = e.target.files[0];
   if (!file) return;
@@ -2791,6 +2928,9 @@ document.getElementById('retry-geocode-btn').addEventListener('click', async () 
   btn.disabled = false;
 });
 
+// ------------------------------------------------------------------
+// 24. DOUBLONS ET QUALITÉ DES DONNÉES IMPORTÉES
+// ------------------------------------------------------------------
 // Détecte les doublons probables (même nom + même adresse) dans une liste de personnes déjà
 // géolocalisées. "identical" : tous les champs pertinents concordent exactement — dans ce
 // cas, exclure l'un des deux ne fait perdre aucune information, un bouton unique suffit.
@@ -2877,6 +3017,9 @@ function downloadFailedAsCsv() {
   URL.revokeObjectURL(url);
 }
 
+// ------------------------------------------------------------------
+// 25. BOÎTE DE CONFIRMATION PERSONNALISÉE (Oui/Non)
+// ------------------------------------------------------------------
 // Remplace confirm() quand les boutons doivent afficher "Oui" / "Non" précisément (le
 // navigateur ne permet pas de personnaliser les boutons de confirm() lui-même).
 let yesNoResolver = null;
@@ -2901,6 +3044,11 @@ document.getElementById('yesno-modal').addEventListener('click', (e) => {
   if (e.target.id === 'yesno-modal') resolveYesNo(false);
 });
 
+// ------------------------------------------------------------------
+// 26. MODALE « ADRESSES À VÉRIFIER ET DOUBLONS »
+// Construit le contenu HTML des trois listes (échecs de géocodage, doublons, confiance
+// faible) affichées dans la fenêtre ouverte par le bouton "Voir la liste".
+// ------------------------------------------------------------------
 function buildDuplicatesHTML() {
   if (duplicateGroups.length === 0) return '<p class="hint">Aucun doublon détecté.</p>';
   let html = `<p class="hint" style="margin:0 0 10px;">${duplicateGroups.length} groupe(s) de doublons probables (même nom et même adresse).</p>`;
@@ -2973,7 +3121,7 @@ document.getElementById('failed-modal').addEventListener('click', (e) => {
 });
 
 // ------------------------------------------------------------------
-// HISTORIQUE DU PROJET — NE PAS SUPPRIMER CETTE INSTRUCTION.
+// 27. HISTORIQUE DU PROJET — DONNÉES — NE PAS SUPPRIMER CETTE INSTRUCTION.
 // Quiconque modifie ce fichier de façon substantielle (humain ou assistant IA sollicité
 // plus tard) doit ajouter une entrée courte ici décrivant la décision prise, à la suite
 // des entrées existantes, dans l'ordre chronologique, avec un thème (voir HISTORY_THEMES
@@ -2987,6 +3135,7 @@ const HISTORY_THEME_ORDER = [
   "Export PDF / PNG",
   "Interface et accessibilité",
   "Tests et fiabilité",
+  "Documentation et lisibilité du code",
   "Décisions de cadrage du projet",
 ];
 const PROJECT_HISTORY = [
@@ -3076,8 +3225,13 @@ const PROJECT_HISTORY = [
   { theme: "Interface et accessibilité", text: "Corrigé aussi un défaut d'alignement repéré sur le bouton \"Vue générale\" : il héritait d'un texte aligné à gauche (text-align: left) alors que tous les autres boutons du fichier sont centrés — corrigé pour rester cohérent avec le reste de l'interface." },
   { theme: "Groupes, destinations et proximité", text: "Deux changements sur \"Recréer les groupes par proximité\". (1) Le rapport final n'affiche plus un simple avertissement conditionnel (fourchette 28-31) : il liste maintenant, pour chaque groupe créé, le nombre de personnes et le nombre de conducteur·rices potentiel·les. (2) Nouvelle contrainte lors de la création des groupes : l'algorithme essaie de garantir au moins MIN_CAR_PER_GROUP (constante ajustable, valeur actuelle : 3) personnes en capacité de conduire par groupe — voiture individuelle ou covoiturage conducteur, en mode principal OU de secours — via une première passe d'affectation prioritaire (par proximité aussi) avant de compléter le reste normalement. Si la population totale ne compte pas assez de conducteur·rices potentiel·les pour que TOUS les groupes atteignent ce minimum, un avertissement chiffré apparaît dans la boîte de confirmation avant de lancer l'opération, et les groupes concernés sont marqués ⚠️ dans le rapport final — sans jamais laisser quiconque sans groupe ni déséquilibrer les tailles. Validé : sans contrainte la géographie prime seule (comportement inchangé) ; avec juste assez de conducteur·rices disponibles, le minimum est atteint dans TOUS les groupes ; en cas de pénurie, l'algorithme fait au mieux sans jamais planter ni oublier personne ; le message de confirmation prévient correctement en cas d'insuffisance chiffrée." },
   { theme: "Données, import et géocodage", text: "Chantier de fiabilisation de l'import lancé (repéré comme point ouvert lors de la session précédente) : les colonnes du fichier importé sont maintenant identifiées par mot-clé dans la ligne d'en-tête (ex. \"nom\", \"prénom\", \"groupe\", \"rue\"/\"adresse\", \"code postal\", \"ville\", \"déplacement\", \"plan B\"/\"secours\", \"places\", \"abonnement\"/\"stabilité\", \"covoiturage\"+\"souhait\"), plutôt que par leur position fixe (C à Q) — un réordonnancement futur des questions du Google Form ne décale donc plus silencieusement l'import. Repli automatique sur les positions fixes historiques, avec avertissement explicite affiché à l'utilisateur, si l'en-tête ne permet pas d'identifier tous les champs indispensables (nom, prénom, groupe, adresse, mode de déplacement) — pour ne jamais dégrader silencieusement un import qui fonctionnait avant. Piège corrigé en cours de route : le mot-clé \"place\" est une sous-chaîne de \"déplacement\" (capturait à tort la colonne du mode de déplacement comme colonne \"places\") et \"adresse\" apparaît aussi dans \"Adresse e-mail\" (capturait à tort la colonne e-mail comme colonne rue) — les deux corrigés (mots entiers pour \"places\", exclusion de \"mail\" pour la colonne rue). Limite connue, assumée : les mots-clés ont été choisis sur des intitulés plausibles, pas sur l'en-tête réel du formulaire (non disponible pour écrire ce code) — à vérifier sur un vrai export avant de s'y fier pour une passation réelle ; en cas de désaccord de mots-clés, le repli avec avertissement protège d'un import silencieusement faux. Validé par 6 tests dédiés (en-tête actuel, en-tête réordonné, e-mail non confondu avec l'adresse, en-tête non reconnaissable déclenchant le repli, en-tête vide, accents/casse ignorés), ajoutés à tests_covoiturage.html — 27/27 tests passent." },
+  { theme: "Documentation et lisibilité du code", text: "Nouvelle règle actée avec Valentin : chaque changement de code doit désormais s'accompagner d'une entrée dans cet historique (déjà la pratique jusqu'ici, maintenant formalisée comme un accord explicite). Passage de relecture complet du fichier (les ~3000 lignes, aucune ligne non lue) pour ajouter des repères de navigation, sans toucher au comportement : un sommaire en tête du script (30 sections numérotées, correspondance directe avec des bannières identiques plus bas, Ctrl+F le titre en MAJUSCULES pour y aller), et des bannières de section ajoutées à tous les endroits qui n'en avaient pas. Deux confusions préexistantes corrigées au passage (commentaires uniquement, aucun changement de comportement) : un commentaire décrivant l'algorithme de ramassage (construction + amélioration locale) était placé au-dessus de haversine() au lieu d'être au-dessus de traceRoutes() où il s'applique réellement ; et le commentaire décrivant la structure du formulaire d'import était au-dessus de regroupByGeography() (la recréation de groupes par proximité) au lieu d'être au-dessus du vrai gestionnaire d'import (l'écouteur sur csv-input) — les deux déplacés au bon endroit. Nouveau thème \"Documentation et lisibilité du code\" créé pour ce type d'entrée, aucun thème existant ne convenant." },
 ];
 
+// ------------------------------------------------------------------
+// 28. HISTORIQUE DU PROJET — AFFICHAGE
+// Construit la fenêtre "📋" à partir du journal ci-dessus, groupé par thème.
+// ------------------------------------------------------------------
 function openHistoryModal() {
   const grouped = new Map();
   PROJECT_HISTORY.forEach(h => {
@@ -3105,6 +3259,11 @@ document.getElementById('history-close').addEventListener('click', closeHistoryM
 document.getElementById('history-modal').addEventListener('click', (e) => {
   if (e.target.id === 'history-modal') closeHistoryModal();
 });
+// ------------------------------------------------------------------
+// 29. ACCESSIBILITÉ CLAVIER DES MODALES
+// Échap ferme la fenêtre modale ouverte (historique, adresses à vérifier, confirmation) ;
+// Tab reste piégé à l'intérieur de cette fenêtre tant qu'elle est ouverte.
+// ------------------------------------------------------------------
 document.addEventListener('keydown', (e) => {
   const modal = [...document.querySelectorAll('.modal-overlay.visible')][0];
   if (!modal) return;
@@ -3123,6 +3282,11 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ------------------------------------------------------------------
+// 30. DÉMARRAGE DE L'APPLICATION
+// Ces deux appels lancent tout au chargement de la page : état initial (conducteur·rices
+// cochées d'office) puis premier rendu (groupes, marqueurs, cadrage de la carte).
+// ------------------------------------------------------------------
 initializeAllMemberStates();
 initFromData();
 </script>
