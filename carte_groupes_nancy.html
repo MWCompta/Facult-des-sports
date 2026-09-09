@@ -503,6 +503,15 @@ function modeColorCss(mode) {
   return c ? `rgb(${c[0]},${c[1]},${c[2]})` : '#fff';
 }
 
+// Palette des tracés par conducteur·rice sur la carte — réutilisée dans l'export PDF pour
+// distinguer visuellement les équipages (conducteur·rice + ses passager·ères) dans le
+// tableau détaillé, avec les mêmes couleurs que leur trajet sur la carte.
+const DRIVER_ROUTE_PALETTE = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#6a4c93', '#ef476f', '#e9c46a', '#118ab2'];
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
 const TRANSPORT_ICONS = {
   "Voiture individuelle (seul(e))": "🚗",
   "Covoiturage en tant que Conducteur / Conductrice": "🚗⭐",
@@ -677,6 +686,74 @@ async function captureMapCanvas() {
     if (zoomEl) zoomEl.classList.remove('capture-hide');
   }
 }
+
+// Petite carte de repère (page 1 de l'export PDF) : zoom fixe sur la métropole du bassin
+// concerné (nancéien ou spinalien), toujours le même cadrage, pour situer le groupe dans
+// son ensemble. N'affiche QUE le fond de carte (marqueurs et tracés masqués le temps de la
+// capture) : leur contenu changerait d'un groupe à l'autre, alors que cette vignette doit
+// rester identique pour tout le bassin — d'où le cache par bassin ci-dessous, qui évite de
+// la reconstruire à chaque groupe lors de l'export groupé.
+const BASIN_LOCATOR_BOUNDS = {
+  nancy: L.latLngBounds([48.595, 6.03], [48.735, 6.29]),
+  epinal: L.latLngBounds([48.135, 6.33], [48.235, 6.58])
+};
+let locatorMapCache = { nancy: null, epinal: null };
+
+function activeTileLayers() {
+  const layers = [];
+  map.eachLayer(l => {
+    if (l instanceof L.TileLayer) layers.push(l);
+    else if (l instanceof L.LayerGroup && l !== markersLayer && l !== routeLayerGroup) {
+      l.eachLayer(sub => { if (sub instanceof L.TileLayer) layers.push(sub); });
+    }
+  });
+  return layers;
+}
+
+// Attend que les tuiles du fond de carte actif aient fini de charger, avec un délai maximum
+// de secours (au cas où l'évènement 'load' ne se déclencherait pas pour une raison ou une
+// autre — on préfère une vignette possiblement incomplète à un export qui reste bloqué).
+function waitForTilesToLoad(timeoutMs = 3000) {
+  const layers = activeTileLayers();
+  if (layers.length === 0) return Promise.resolve();
+  return new Promise(resolve => {
+    let remaining = layers.length;
+    const timer = setTimeout(resolve, timeoutMs);
+    layers.forEach(l => l.once('load', () => {
+      remaining--;
+      if (remaining <= 0) { clearTimeout(timer); resolve(); }
+    }));
+  });
+}
+
+async function getLocatorMapImage(basin) {
+  if (locatorMapCache[basin]) return locatorMapCache[basin];
+  const originalCenter = map.getCenter();
+  const originalZoom = map.getZoom();
+  const zoomEl = map.zoomControl && map.zoomControl.getContainer();
+  if (zoomEl) zoomEl.classList.add('capture-hide');
+  map.removeLayer(markersLayer);
+  map.removeLayer(routeLayerGroup);
+  try {
+    const tilesLoaded = waitForTilesToLoad();
+    map.fitBounds(BASIN_LOCATOR_BOUNDS[basin], { animate: false });
+    await tilesLoaded;
+    await new Promise(r => requestAnimationFrame(r));
+    const canvas = await html2canvas(document.getElementById('map'), {
+      useCORS: true, backgroundColor: '#ffffff', scale: 1
+    });
+    locatorMapCache[basin] = canvas.toDataURL('image/png');
+    return locatorMapCache[basin];
+  } finally {
+    map.addLayer(markersLayer);
+    map.addLayer(routeLayerGroup);
+    if (zoomEl) zoomEl.classList.remove('capture-hide');
+    map.setView(originalCenter, originalZoom, { animate: false });
+  }
+}
+// Le fond de carte affiché fait partie de la vignette : si on en change en cours de
+// session, le cache doit être recalculé plutôt que de garder l'ancien fond.
+map.on('baselayerchange', () => { locatorMapCache = { nancy: null, epinal: null }; });
 
 // ------------------------------------------------------------------
 // 6. ÉTAT GLOBAL PARTAGÉ
@@ -1661,7 +1738,7 @@ async function traceRoutes() {
 
     document.getElementById('route-status').textContent = 'Calcul des itinéraires routiers…';
 
-    const palette = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#6a4c93', '#ef476f', '#e9c46a', '#118ab2'];
+    const palette = DRIVER_ROUTE_PALETTE;
     const colorByDriver = new Map();
     const colorByPassenger = new Map();
     const driverInfos = [];
@@ -1987,86 +2064,224 @@ function drawPageHeader(doc, title, subtitle, pageW, margin) {
   doc.setTextColor(0, 0, 0);
 }
 
-// Paliers de compacité, du plus confortable au plus serré. À chaque palier correspondent
-// une police et un espacement pour la table principale ET pour le bilan — les deux se
-// resserrent ensemble, plutôt que de laisser l'un déborder pendant que l'autre reste large.
+// Paliers de compacité du TABLEAU détaillé, du plus confortable au plus serré (utilisés
+// uniquement pour la table : le bloc bilan visuel ci-dessous a une taille fixe, indépendante
+// du nombre de lignes du tableau).
 const LAYOUT_LEVELS = [
-  { tableFs: 8, tableCp: 1.3, bilanFs: 8.3, bilanLineH: 5, modeFs: 7.5, modeCp: 1.4 },
-  { tableFs: 7, tableCp: 1.1, bilanFs: 7.6, bilanLineH: 4.6, modeFs: 7, modeCp: 1.2 },
-  { tableFs: 6, tableCp: 0.9, bilanFs: 6.8, bilanLineH: 4.1, modeFs: 6.2, modeCp: 1 },
-  { tableFs: 5.2, tableCp: 0.7, bilanFs: 6, bilanLineH: 3.6, modeFs: 5.5, modeCp: 0.8 },
-  { tableFs: 4.4, tableCp: 0.55, bilanFs: 5.3, bilanLineH: 3.1, modeFs: 4.8, modeCp: 0.6 }
+  { tableFs: 8, tableCp: 1.3 },
+  { tableFs: 7, tableCp: 1.1 },
+  { tableFs: 6, tableCp: 0.9 },
+  { tableFs: 5.2, tableCp: 0.7 },
+  { tableFs: 4.4, tableCp: 0.55 }
 ];
 function rowHeightFor(fontSize, cellPadding) { return fontSize * 0.42 + cellPadding * 2; }
 
-// Hauteur estimée de la section bilan à un palier donné (varie avec le nombre de modes).
-function estimateBilanHeight(nModes, level) {
-  const textBlock = 6 + (level.bilanLineH * 0.3) + level.bilanLineH * 5 + 2; // titre + 5 lignes + marge
-  const modeTable = (nModes + 1) * rowHeightFor(level.modeFs, level.modeCp);
-  return textBlock + modeTable + 4;
-}
-
-// Choisit le palier le plus confortable qui fait tenir la table ET le bilan dans l'espace
-// disponible ; si même le plus serré ne suffit pas (cas extrême), on le retourne quand même
-// plutôt que d'échouer — c'est le mieux qu'on puisse faire tenir.
-function chooseLayoutLevel(nRows, nModes, availableHeight) {
+// Choisit le palier le plus confortable qui fait tenir le tableau dans l'espace disponible ;
+// si même le plus serré ne suffit pas (cas extrême), on le retourne quand même plutôt que
+// d'échouer — c'est le mieux qu'on puisse faire tenir.
+function chooseLayoutLevel(nRows, availableHeight) {
   for (const level of LAYOUT_LEVELS) {
     const tableH = (nRows + 2) * rowHeightFor(level.tableFs, level.tableCp);
-    const bilanH = estimateBilanHeight(nModes, level);
-    if (tableH + 8 + bilanH <= availableHeight) return level;
+    if (tableH <= availableHeight) return level;
   }
   return LAYOUT_LEVELS[LAYOUT_LEVELS.length - 1];
 }
 
-function drawGroupBilan(doc, x, y, width, bilan, level) {
-  let cy = y + 6;
-  doc.setFontSize(10.5);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(31, 41, 59);
-  doc.text('Bilan de ce groupe', x, cy);
-  doc.setDrawColor(210, 214, 220);
-  doc.line(x, cy + 1.5, x + width, cy + 1.5);
-  doc.setFont(undefined, 'normal');
-  cy += level.bilanLineH * 1.3 + 2;
-
-  doc.setFontSize(level.bilanFs);
-  doc.setTextColor(55, 60, 70);
-  const lines = [
-    `${bilan.nCarPeople} personne(s) en voiture — ${bilan.nDrivers} conducteur·rice(s), ${bilan.nPassengers} passager·ère(s), ${bilan.nUnassigned} non intégré(e)(s).`,
-    `Véhicules évités : ${bilan.carsAvoided} (${bilan.nCarPeople} personne(s) en voiture ramenée(s) à ${bilan.nDrivers} véhicule(s) réellement utilisé(s)).`
+// ------------------------------------------------------------------
+// Bilan visuel (cartes chiffrées + comparaison seul/covoituré + répartition des modes) —
+// remplace l'ancien bloc texte + tableau. Hauteur fixe (ne dépend pas du nombre de lignes du
+// tableau détaillé, qui vient après), retournée par drawGroupBilanVisual() pour que l'appelant
+// sache où démarrer la suite.
+// ------------------------------------------------------------------
+function drawKpiCards(doc, x, y, width, bilan) {
+  const cards = [
+    {
+      label: 'Véhicules évités', value: String(bilan.carsAvoided), suffix: '',
+      subtitle: `${bilan.nCarPeople} personne(s) en voiture → ${bilan.nDrivers} véhicule(s) réellement utilisé(s)`
+    },
+    {
+      label: 'CO2 évité', value: bilan.co2Pct.toFixed(0), suffix: ' %',
+      subtitle: `${fmtKg(bilan.totals.covoitCO2)} covoituré, contre ${fmtKg(bilan.totals.seulCO2)} si chacun roulait seul`
+    },
+    {
+      label: 'Coût évité', value: bilan.costPct.toFixed(0), suffix: ' %',
+      subtitle: `${fmtEuro(bilan.totals.covoitCost)} covoituré, contre ${fmtEuro(bilan.totals.seulCost)} si chacun roulait seul`
+    },
+    {
+      label: 'Distance évitée', value: bilan.kmPct.toFixed(0), suffix: ' %',
+      subtitle: `${fmtKm(bilan.totals.covoitKm)} covoiturés, contre ${fmtKm(bilan.totals.seulKm)} si chacun roulait seul`
+    }
   ];
-  lines.forEach(l => { doc.text(l, x, cy); cy += level.bilanLineH; });
+  const gap = 4, cardH = 20;
+  const cardW = (width - gap * (cards.length - 1)) / cards.length;
+  cards.forEach((card, i) => {
+    const cx = x + i * (cardW + gap);
+    doc.setDrawColor(226, 229, 234);
+    doc.setFillColor(250, 251, 252);
+    doc.roundedRect(cx, y, cardW, cardH, 1.4, 1.4, 'FD');
+    doc.setFillColor(22, 130, 90);
+    doc.rect(cx, y, cardW, 1.3, 'F');
 
-  const metricLines = [
-    { label: 'CO2', v: fmtKg(bilan.totals.covoitCO2), s: fmtKg(bilan.totals.seulCO2), saved: fmtKg(bilan.co2Saved), pct: bilan.co2Pct },
-    { label: 'Coût', v: fmtEuro(bilan.totals.covoitCost), s: fmtEuro(bilan.totals.seulCost), saved: fmtEuro(bilan.costSaved), pct: bilan.costPct },
-    { label: 'Distance', v: fmtKm(bilan.totals.covoitKm), s: fmtKm(bilan.totals.seulKm), saved: fmtKm(bilan.kmSaved), pct: bilan.kmPct }
-  ];
-  metricLines.forEach(m => {
-    doc.setTextColor(55, 60, 70);
-    doc.text(`${m.label} : ${m.v} avec le covoiturage, contre ${m.s} si chacun roulait seul — soit `, x, cy);
-    const prefixW = doc.getTextWidth(`${m.label} : ${m.v} avec le covoiturage, contre ${m.s} si chacun roulait seul — soit `);
-    doc.setTextColor(22, 130, 90);
     doc.setFont(undefined, 'bold');
-    doc.text(`${m.saved} évités (${m.pct.toFixed(0)} %)`, x + prefixW, cy);
-    doc.setFont(undefined, 'normal');
-    cy += level.bilanLineH;
-  });
-  cy += 2;
+    doc.setFontSize(6.2);
+    doc.setTextColor(91, 100, 114);
+    doc.text(card.label.toUpperCase(), cx + 3, y + 7.6);
 
-  const modeRows = Object.entries(bilan.modeCount).sort((a, b) => b[1] - a[1])
-    .map(([mode, n]) => [mode, String(n), ((n / bilan.nCarPeople) * 100).toFixed(0) + ' %']);
-  const modeTableWidth = Math.min(width, 110);
-  doc.autoTable({
-    startY: cy,
-    margin: { left: x, right: doc.internal.pageSize.getWidth() - x - modeTableWidth },
-    tableWidth: modeTableWidth,
-    head: [['Mode de déplacement', 'Personnes', 'Part']],
-    body: modeRows,
-    styles: { fontSize: level.modeFs, cellPadding: level.modeCp },
-    headStyles: { fillColor: [70, 80, 100] }
+    doc.setFontSize(14.5);
+    doc.setTextColor(31, 41, 59);
+    doc.text(card.value, cx + 3, y + 14.5);
+    if (card.suffix) {
+      const vw = doc.getTextWidth(card.value);
+      doc.setFontSize(8);
+      doc.text(card.suffix, cx + 3 + vw + 0.8, y + 14.5);
+    }
+
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(5.8);
+    doc.setTextColor(91, 100, 114);
+    const lines = doc.splitTextToSize(card.subtitle, cardW - 6);
+    doc.text(lines.slice(0, 2), cx + 3, y + 17.4);
   });
-  return doc.lastAutoTable.finalY;
+  doc.setTextColor(0, 0, 0);
+  return y + cardH;
+}
+
+// Deux barres (grise "seul·e" pleine largeur, verte "covoituré" proportionnelle) : la valeur
+// covoiturée est toujours ramenée à une fraction de la valeur "seul·e" pour rester visuellement
+// comparable d'une métrique à l'autre.
+function drawComparisonBlock(doc, x, y, w, title, seulVal, covoitVal, fmt) {
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(31, 41, 59);
+  doc.text(title, x, y + 2.6);
+  doc.setFont(undefined, 'normal');
+
+  const labelW = 12, valueW = 15, barX = x + labelW, barW = w - labelW - valueW, barH = 2.6;
+  let by = y + 6;
+
+  doc.setFontSize(6);
+  doc.setTextColor(91, 100, 114);
+  doc.text('Seul·e', x, by + barH - 0.4);
+  doc.setFillColor(226, 229, 234);
+  doc.rect(barX, by, barW, barH, 'F');
+  doc.text(fmt(seulVal), x + w, by + barH - 0.4, { align: 'right' });
+
+  by += barH + 2.4;
+  doc.setTextColor(91, 100, 114);
+  doc.text('Covoit.', x, by + barH - 0.4);
+  doc.setFillColor(226, 229, 234);
+  doc.rect(barX, by, barW, barH, 'F');
+  const ratio = seulVal > 0 ? Math.min(1, Math.max(0, covoitVal / seulVal)) : 0;
+  doc.setFillColor(22, 130, 90);
+  doc.rect(barX, by, ratio > 0 ? Math.max(barW * ratio, 1.5) : 0, barH, 'F');
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(22, 130, 90);
+  doc.text(fmt(covoitVal), x + w, by + barH - 0.4, { align: 'right' });
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(0, 0, 0);
+}
+
+// Barre empilée (une couleur par mode, reprises de MODE_COLORS) + légende des modes les
+// plus fréquents.
+function drawModeDistribution(doc, x, y, w, modeCount, total) {
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(31, 41, 59);
+  doc.text('Répartition des modes', x, y + 2.6);
+  doc.setFont(undefined, 'normal');
+
+  const entries = Object.entries(modeCount).sort((a, b) => b[1] - a[1]);
+  const barY = y + 5, barH = 2.6;
+  let cx = x;
+  entries.forEach(([mode, n]) => {
+    const segW = total > 0 ? w * (n / total) : 0;
+    const c = MODE_COLORS[mode] || [230, 230, 230];
+    doc.setFillColor(c[0], c[1], c[2]);
+    doc.rect(cx, barY, segW, barH, 'F');
+    cx += segW;
+  });
+  doc.setDrawColor(226, 229, 234);
+  doc.rect(x, barY, w, barH);
+
+  let ly = barY + barH + 3;
+  doc.setFontSize(5.6);
+  const shown = entries.slice(0, 4);
+  shown.forEach(([mode, n]) => {
+    const c = MODE_COLORS[mode] || [230, 230, 230];
+    doc.setFillColor(c[0], c[1], c[2]);
+    doc.setDrawColor(199, 205, 214);
+    doc.rect(x, ly - 1.8, 2, 2, 'FD');
+    doc.setTextColor(91, 100, 114);
+    doc.text(`${mode} — ${total > 0 ? (n / total * 100).toFixed(0) : 0} %`, x + 3, ly);
+    ly += 3;
+  });
+  if (entries.length > shown.length) {
+    doc.setTextColor(91, 100, 114);
+    doc.text(`+ ${entries.length - shown.length} autre(s) mode(s)`, x + 3, ly);
+  }
+  doc.setTextColor(0, 0, 0);
+}
+
+function drawComparisonAndModes(doc, x, y, width, bilan) {
+  const boxH = 26, pad = 4, colGap = 6;
+  doc.setDrawColor(226, 229, 234);
+  doc.setFillColor(255, 255, 255);
+  doc.roundedRect(x, y, width, boxH, 1.4, 1.4, 'FD');
+
+  const modeColW = width * 0.22;
+  const compColW = (width - modeColW - pad * 2 - colGap * 2) / 2;
+  let cx = x + pad;
+  const cy = y + pad;
+
+  drawComparisonBlock(doc, cx, cy, compColW, 'CO2 — seul·e vs covoituré', bilan.totals.seulCO2, bilan.totals.covoitCO2, fmtKg);
+  cx += compColW + colGap;
+  drawComparisonBlock(doc, cx, cy, compColW, 'Coût — seul·e vs covoituré', bilan.totals.seulCost, bilan.totals.covoitCost, fmtEuro);
+  cx += compColW + colGap;
+  drawModeDistribution(doc, cx, cy, modeColW - pad, bilan.modeCount, bilan.nCarPeople);
+
+  return y + boxH;
+}
+
+// Assemble les trois blocs ci-dessus. `title` à null pour l'omettre (cas du bilan global,
+// dont le bandeau de page dit déjà "Bilan global").
+function drawGroupBilanVisual(doc, x, y, width, bilan, title = 'Bilan de ce groupe') {
+  let cy = y;
+  if (title) {
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(31, 41, 59);
+    doc.text(title, x, cy + 3);
+    doc.setDrawColor(210, 214, 220);
+    doc.line(x, cy + 4.5, x + width, cy + 4.5);
+    doc.setFont(undefined, 'normal');
+    cy += 9;
+  }
+  cy = drawKpiCards(doc, x, cy, width, bilan) + 5;
+  cy = drawComparisonAndModes(doc, x, cy, width, bilan);
+  doc.setTextColor(0, 0, 0);
+  return cy;
+}
+
+// Couleur d'équipage par ligne du tableau détaillé : chaque conducteur·rice reprend la
+// couleur de son tracé sur la carte (DRIVER_ROUTE_PALETTE, dans l'ordre de survivingDrivers —
+// le même ordre que celui utilisé pour perPerson), ses passager·ères héritent de la même
+// couleur juste en dessous. Non intégré·es et indépendant·es n'appartiennent à aucun
+// équipage : gris neutre.
+function assignCrewColors(concerned) {
+  const colors = [];
+  let crewColor = [199, 205, 214], driverIdx = -1;
+  concerned.forEach(p => {
+    if (p.role === 'Conducteur·rice') {
+      driverIdx++;
+      crewColor = hexToRgb(DRIVER_ROUTE_PALETTE[driverIdx % DRIVER_ROUTE_PALETTE.length]);
+      colors.push(crewColor);
+    } else if (p.role.startsWith('Passager')) {
+      colors.push(crewColor);
+    } else {
+      colors.push([199, 205, 214]);
+    }
+  });
+  return colors;
 }
 
 // Au-delà de ce nombre de personnes concernées, on renonce à tout faire tenir sur une seule
@@ -2074,70 +2289,98 @@ function drawGroupBilan(doc, x, y, width, bilan, level) {
 // plusieurs pages, que de tasser au point de devenir illisible.
 const BILAN_INLINE_THRESHOLD = 15;
 
-// Construit la page (ou les pages) de données d'un groupe : tableau détaillé des personnes
-// concernées, puis bilan du groupe. En dessous du seuil, tente de tout faire tenir sur une
-// page (paliers de compacité). Au-dessus, garde une police confortable fixe et laisse le
-// tableau déborder sur autant de pages que nécessaire, avec l'en-tête stylée répétée sur
-// chacune ; le bilan est placé à la suite du tableau, sur une nouvelle page si besoin.
+// Construit la page (ou les pages) de données d'un groupe : bilan visuel du groupe, puis
+// tableau détaillé des personnes concernées (équipages séparés par couleur). En dessous du
+// seuil, tente de tout faire tenir sur une page (paliers de compacité pour le tableau
+// uniquement, le bilan a une taille fixe). Au-dessus, garde une police confortable fixe pour
+// le tableau et le laisse déborder sur autant de pages que nécessaire, avec l'en-tête stylée
+// répétée sur chacune (le bilan, lui, n'apparaît qu'une fois, en haut de la première page).
 function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, contentTop, concerned, bilan) {
   const t = concerned.reduce((acc, p) => {
     acc.seconds += p.seulSeconds; acc.km += p.seulKm; acc.co2 += p.seulCO2; acc.cost += p.seulCost;
     return acc;
   }, { seconds: 0, km: 0, co2: 0, cost: 0 });
-  const head = [['Nom', 'Rôle', 'Mode', 'Temps', 'Dist.', 'CO2', 'Coût', 'Covoiturage']];
-  const body = concerned.map(p => [p.nom, p.role, p.mode, fmtMin(p.seulSeconds), fmtKm(p.seulKm), fmtKg(p.seulCO2), fmtEuro(p.seulCost), p.covoitLabel]);
-  const foot = [['TOTAL', '', '', fmtMin(t.seconds), fmtKm(t.km), fmtKg(t.co2), fmtEuro(t.cost), '']];
+  const head = [['', 'Nom', 'Rôle', 'Mode', 'Temps', 'Dist.', 'CO2', 'Coût', 'Covoiturage']];
+  const body = concerned.map(p => ['', p.nom, p.role, p.mode, fmtMin(p.seulSeconds), fmtKm(p.seulKm), fmtKg(p.seulCO2), fmtEuro(p.seulCost), p.covoitLabel]);
+  const foot = [['', 'TOTAL', '', '', fmtMin(t.seconds), fmtKm(t.km), fmtKg(t.co2), fmtEuro(t.cost), '']];
+  const crewColors = assignCrewColors(concerned);
+  const columnStyles = { 0: { cellWidth: 2.4 } };
   const didParseCell = (data) => {
     if (data.section === 'body') {
       const c = MODE_COLORS[concerned[data.row.index].mode];
       if (c) data.cell.styles.fillColor = c;
+      if (data.column.index === 0) data.cell.styles.fillColor = crewColors[data.row.index];
     }
   };
-  const nModes = Object.keys(bilan.modeCount).length;
+
+  drawPageHeader(doc, `${groupTitle} — bilan et détail`, dateStr, pageW, margin);
+  const bilanBottom = drawGroupBilanVisual(doc, margin, contentTop, pageW - margin * 2, bilan);
+  const tableTop = bilanBottom + 6;
 
   if (concerned.length <= BILAN_INLINE_THRESHOLD) {
-    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
-    const level = chooseLayoutLevel(concerned.length, nModes, pageH - contentTop - margin);
+    const level = chooseLayoutLevel(concerned.length, pageH - tableTop - margin);
     doc.autoTable({
-      startY: contentTop,
+      startY: tableTop,
       margin: { left: margin, right: margin },
-      head, body, foot,
+      head, body, foot, columnStyles,
       styles: { fontSize: level.tableFs, cellPadding: level.tableCp, overflow: 'linebreak' },
       headStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs },
       footStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs, fontStyle: 'bold' },
       didParseCell
     });
-    drawGroupBilan(doc, margin, doc.lastAutoTable.finalY + 8, pageW - margin * 2, bilan, level);
   } else {
     const level = LAYOUT_LEVELS[0]; // groupe important : reste lisible, s'étale si besoin
-    drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin);
     doc.autoTable({
-      startY: contentTop,
+      startY: tableTop,
       margin: { left: margin, right: margin, top: contentTop },
-      head, body, foot,
+      head, body, foot, columnStyles,
       styles: { fontSize: level.tableFs, cellPadding: level.tableCp, overflow: 'linebreak' },
       headStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs },
       footStyles: { fillColor: [31, 41, 59], fontSize: level.tableFs, fontStyle: 'bold' },
       didParseCell,
       didDrawPage: () => drawPageHeader(doc, `${groupTitle} — détail`, dateStr, pageW, margin)
     });
-    const bilanH = estimateBilanHeight(nModes, level);
-    let bilanY = doc.lastAutoTable.finalY + 8;
-    if (bilanY + bilanH > pageH - margin) {
-      doc.addPage();
-      drawPageHeader(doc, `${groupTitle} — bilan`, dateStr, pageW, margin);
-      bilanY = contentTop;
-    }
-    drawGroupBilan(doc, margin, bilanY, pageW - margin * 2, bilan, level);
   }
+}
+
+// Vignette de repère en bas à droite de la carte pleine page (page 1) : zoom fixe sur le
+// bassin du groupe (voir getLocatorMapImage). Rien à dessiner en vue générale (pas un
+// bassin unique) — l'appelant ne doit pas appeler cette fonction dans ce cas.
+async function drawLocatorInset(doc, group, pageW, pageH, margin) {
+  const basin = basinOf(group);
+  const locatorImg = await getLocatorMapImage(basin);
+  const img = new Image();
+  await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = locatorImg; });
+
+  const locW = 62, labelH = 6;
+  const locH = locW * (img.height / img.width);
+  const x = pageW - margin - locW;
+  const y = pageH - margin - locH - labelH;
+
+  doc.setDrawColor(31, 41, 59);
+  doc.setLineWidth(0.6);
+  doc.rect(x - 0.5, y - 0.5, locW + 1, locH + labelH + 1);
+  doc.addImage(locatorImg, 'PNG', x, y, locW, locH);
+  doc.setFillColor(31, 41, 59);
+  doc.rect(x, y + locH, locW, labelH, 'F');
+  doc.setFontSize(6.5);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text(
+    basin === 'epinal' ? "Vue d'ensemble — Métropole d'Épinal" : "Vue d'ensemble — Métropole de Nancy",
+    x + locW / 2, y + locH + labelH - 2, { align: 'center' }
+  );
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(0, 0, 0);
 }
 
 // ------------------------------------------------------------------
 // 15. EXPORT PDF — GÉNÉRATION DU DOCUMENT
-// Page 1 : carte pleine page. Page 2 : tableau détaillé par personne + bilan du groupe.
-// Utilisée pour l'export d'un seul groupe (ou de la vue générale) via le bouton
-// "Exporter (PDF)" — voir aussi l'export groupé (section 17), qui appelle des fonctions
-// similaires pour construire un document unique avec tous les groupes.
+// Page 1 : carte pleine page + vignette de repère sur le bassin (sauf en vue générale).
+// Page 2 : bilan visuel du groupe + tableau détaillé par personne. Utilisée pour l'export
+// d'un seul groupe (ou de la vue générale) via le bouton "Exporter (PDF)" — voir aussi
+// l'export groupé (section 17), qui appelle des fonctions similaires pour construire un
+// document unique avec tous les groupes.
 // ------------------------------------------------------------------
 async function exportAsPdf(label) {
   const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
@@ -2161,8 +2404,9 @@ async function exportAsPdf(label) {
   let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
   if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
   doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
+  if (selectedGroup !== null) await drawLocatorInset(doc, selectedGroup, pageW, pageH, margin);
 
-  // PAGE 2 — toutes les données (tableau détaillé + bilan du groupe)
+  // PAGE 2 — bilan visuel du groupe + tableau détaillé
   doc.addPage();
   const concerned = lastTraceData ? filterConcerned(lastTraceData.perPerson) : [];
   const groupTitle = `Covoiturage L1 STAPS — ${exportTitle()}`;
@@ -2282,48 +2526,44 @@ function computeGlobalSummary() {
   };
 }
 
-// Dessine la page de bilan global en tête du PDF groupé (première page) — extrait de
-// exportAllGroups sur le même principe que les fonctions drawPageHeader/drawGroupBilan
-// déjà présentes plus haut (section 14).
-function drawGlobalSummaryPage(doc, s) {
-  const margin0 = 12;
-  const pageW0 = doc.internal.pageSize.getWidth();
-  drawPageHeader(doc, 'Covoiturage L1 STAPS — Bilan global', `${new Date().toLocaleString('fr-FR')} — ${s.nGroups} groupe(s) tracé(s)`, pageW0, margin0);
-
+// Ramène computeGlobalSummary() à la même forme que computeGroupBilan() (totaux + valeurs
+// dérivées seul/covoituré), pour pouvoir réutiliser drawGroupBilanVisual() sur le bilan
+// global comme sur celui d'un groupe.
+function toBilanShape(s) {
   const co2Saved = s.seulCO2 - s.covoitCO2;
   const co2Pct = s.seulCO2 > 0 ? (co2Saved / s.seulCO2 * 100) : 0;
   const costSaved = s.seulCost - s.covoitCost;
   const costPct = s.seulCost > 0 ? (costSaved / s.seulCost * 100) : 0;
   const kmSaved = s.seulKm - s.covoitKm;
   const kmPct = s.seulKm > 0 ? (kmSaved / s.seulKm * 100) : 0;
+  return {
+    nCarPeople: s.nCarPeople, nDrivers: s.nDrivers, nPassengers: s.nPassengers, nUnassigned: s.nUnassigned,
+    carsAvoided: s.carsAvoided,
+    totals: { seulCO2: s.seulCO2, covoitCO2: s.covoitCO2, seulCost: s.seulCost, covoitCost: s.covoitCost, seulKm: s.seulKm, covoitKm: s.covoitKm },
+    co2Saved, co2Pct, costSaved, costPct, kmSaved, kmPct,
+    modeCount: s.modeCount
+  };
+}
 
-  doc.setFontSize(10);
-  const lines = [
-    `Personnes concernées par le covoiturage : ${s.nDrivers + s.nPassengers + s.nUnassigned} — ${s.nDrivers} conducteur·rices, ${s.nPassengers} passager·ères covoituré·es, ${s.nUnassigned} non intégré·es.`,
-    `Véhicules évités : ${s.carsAvoided} (${s.nCarPeople} personnes en voiture ramenées à ${s.nDrivers} véhicules réellement utilisés).`,
-    `CO2 : ${fmtKg(s.covoitCO2)} avec le covoiturage, contre ${fmtKg(s.seulCO2)} si chacun roulait seul — soit ${fmtKg(co2Saved)} évités (${co2Pct.toFixed(0)} %).`,
-    `Coût : ${fmtEuro(s.covoitCost)} avec le covoiturage, contre ${fmtEuro(s.seulCost)} si chacun roulait seul — soit ${fmtEuro(costSaved)} économisés (${costPct.toFixed(0)} %).`,
-    `Distance cumulée : ${fmtKm(s.covoitKm)} avec le covoiturage, contre ${fmtKm(s.seulKm)} si chacun roulait seul — soit ${fmtKm(kmSaved)} évités (${kmPct.toFixed(0)} %).`
-  ];
-  let y = 26;
-  lines.forEach(line => { doc.text(line, margin0, y); y += 6; });
+// Dessine la page de bilan global en tête du PDF groupé (première page) — même bilan visuel
+// que pour un groupe (drawGroupBilanVisual, section 14), suivi du détail par groupe.
+function drawGlobalSummaryPage(doc, s) {
+  const margin0 = 12;
+  const pageW0 = doc.internal.pageSize.getWidth();
+  drawPageHeader(doc, 'Covoiturage L1 STAPS — Bilan global', `${new Date().toLocaleString('fr-FR')} — ${s.nGroups} groupe(s) tracé(s)`, pageW0, margin0);
 
-  const totalConcerned = s.perGroup.reduce((sum, g) => sum + g.nPeople, 0);
-  const modeRows = Object.entries(s.modeCount)
-    .sort((a, b) => b[1] - a[1])
-    .map(([mode, n]) => [mode, String(n), ((n / totalConcerned) * 100).toFixed(0) + ' %']);
+  const bilanBottom = drawGroupBilanVisual(doc, margin0, 24, pageW0 - margin0 * 2, toBilanShape(s), null);
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(31, 41, 59);
+  doc.text('Détail par groupe', margin0, bilanBottom + 8);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(0, 0, 0);
+
   doc.autoTable({
-    startY: y + 4,
-    margin: { left: margin0, right: pageW0 / 2 },
-    head: [['Mode de déplacement', 'Personnes', 'Part']],
-    body: modeRows,
-    styles: { fontSize: 7.5, cellPadding: 1.5 },
-    headStyles: { fillColor: [31, 41, 59] }
-  });
-
-  doc.autoTable({
-    startY: y + 4,
-    margin: { left: pageW0 / 2 + 4, right: margin0 },
+    startY: bilanBottom + 11,
+    margin: { left: margin0, right: margin0 },
     head: [['Groupe', 'Personnes', 'Conduct.', 'CO2 seul', 'CO2 covoit.']],
     body: s.perGroup.map(g => [String(g.groupe), String(g.nPeople), String(g.nDrivers), fmtKg(g.seulCO2), fmtKg(g.covoitCO2)]),
     styles: { fontSize: 7.5, cellPadding: 1.5 },
@@ -2367,8 +2607,9 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
   if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
   doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
+  await drawLocatorInset(doc, g, pageW, pageH, margin);
 
-  // Page données : tableau détaillé + bilan du groupe
+  // Page données : bilan visuel + tableau détaillé
   doc.addPage();
 
   if (concerned.length) {
@@ -3405,6 +3646,7 @@ const PROJECT_HISTORY = [
   { theme: "Algorithme de covoiturage", text: "Deux corrections demandées par Valentin sur le précochage des conducteur·rices. (1) Bug trouvé et corrigé : `memberState` (cases cochées/exclues/plan B, par personne) n'était jamais remis à zéro lors d'un import normal (contrairement à \"Recréer les groupes par proximité\", qui le faisait déjà). Comme l'identifiant d'une personne est simplement sa position dans le fichier (1, 2, 3…), réimporter un fichier corrigé dans la même session sans recharger la page faisait hériter silencieusement à la personne de la ligne N tout l'état (coché, décoché, exclu…) de celle qui occupait la ligne N lors de l'import précédent, même si ce n'était plus la même personne — d'où des précochages visiblement erronés sans cause apparente. Corrigé : `memberState` et `savedTraceData` sont remis à zéro au début de handleCsvImport, comme le fait déjà regroupByGeography(). Démontré par un scénario isolé avant/après le correctif. (2) Précochage visuel étendu aux personnes en \"Covoiturage en tant que Passager / Passagère\" : n'ayant pas de véhicule propre, elles ne peuvent jamais être conductrices et sont de toute façon ramassées automatiquement au traçage (déjà le cas avant ce changement, voir pickupCandidates) — leur case à cocher, jusqu'ici décochée et cliquable (ce qui laissait croire à tort qu'on pouvait les faire \"conduire\"), s'affiche maintenant cochée et désactivée : adhésion visuelle au trajet sans risque de créer une conductrice fictive sans véhicule. Redevient une case normale et cliquable si la personne est exclue, ou si son mode actif change (ex. bascule sur un plan B \"voiture individuelle\"). st.driver reste toujours à false pour ces personnes : aucun changement sur le calcul de l'itinéraire, uniquement l'affichage. Validé par des scénarios isolés (personne non exclue, personne exclue, mode voiture inchangé, bascule plan B) avant intégration ; pas de test permanent ajouté pour cette dernière vérification (logique d'affichage simple, déjà revérifiée à la main)." },
   { theme: "Interface et accessibilité", text: "Confirmation de Valentin sur le correctif memberState de l'entrée précédente : le bug touchait en réalité TOUT premier import, pas seulement un réimport. Les 54 adresses de démonstration (aucune n'a de champ mode de déplacement) initialisent déjà memberState pour les id 1 à 54 dès le chargement de la page — donc le tout premier import réel d'une session était déjà, du point de vue du code, un \"deuxième jeu de données\" : quiconque occupait une des 54 premières lignes du fichier importé héritait à tort du driver=false des données de démo, quel que soit son vrai mode. Reproduit puis vérifié corrigé par un scénario isolé (personne #3 en \"Voiture individuelle\" dans les 54 premières lignes, correctement précochée après le correctif). Nouveau problème signalé dans la foulée : pendant un import, la colonne de gauche verrouillée (busy-lock, pointer-events: none) ne peut plus défiler — si la vue était descendue, impossible de remonter voir le compteur de progression (#subtitle, en haut de la colonne) avant la fin de l'import. Corrigé en dupliquant ce message à un second endroit toujours visible, juste sous le bouton \"Parcourir\" (nouvel élément #import-status) : une fonction setImportStatus() écrit désormais aux deux endroits à chaque mise à jour, remplaçant les écritures directes sur #subtitle dans handleCsvImport et handleRetryGeocode. Solution choisie parmi les deux proposées par Valentin (dupliquer l'affichage, plutôt que rendre la colonne défilable pendant le verrou) car nettement plus simple à implémenter sans risque de régression sur le verrou lui-même." },
   { theme: "Algorithme de covoiturage", text: "Vérification demandée par Valentin de \"Mode mauvais temps\" et \"Prendre tout le monde en compte\" : les deux remplissent bien leur rôle (vérifié par des scénarios isolés — bascule vers le plan B uniquement pour les personnes à pied ayant un vrai plan B, sans toucher aux autres modes ; \"tout le monde\" rend bien chacun·e candidat·e au ramassage et vide la catégorie indépendant·e). Un point mineur relevé au passage : le bouton 🚗+ (\"forcer dans le covoiturage\") restait affiché même quand \"tout le monde\" le rendait déjà inutile. Proposition initiale de Valentin pour \"tout le monde\" : cocher littéralement la case de tout le monde dans tous les groupes, avec retour à l'état initial si redécochée. Déconseillé tel quel et remplacé par l'équivalent sûr déjà utilisé pour les passager·ères (entrée du 9 sept) : cocher réellement la case (st.driver = true) pour un mode sans véhicule (bus, vélo, moto, à pied) créerait une conductrice fictive sans voiture, faussant l'algorithme (une personne réellement véhiculée y perdrait une place dans une voiture qui n'existe pas). Solution retenue, validée par 8 scénarios isolés : la case cochée-désactivée déjà utilisée pour les passager·ères s'étend à tout mode sans véhicule dès que \"tout le monde\" est actif — dans le groupe affiché, quel qu'il soit, sans calcul préalable sur les 20 groupes. Les personnes ayant réellement une voiture gardent toujours leur case normale et cliquable (jamais forcées conductrices par ce mode). Le bouton 🚗+ est masqué quand \"tout le monde\" est actif (devenu redondant). Comme rien n'est modifié dans st.driver pour les personnes sans véhicule, décocher \"tout le monde\" restaure automatiquement l'affichage d'origine sans code de restauration nécessaire." },
+  { theme: "Export PDF / PNG", text: "Refonte visuelle demandée par Valentin (\"beaucoup plus de design\", force de proposition demandée) — validée d'abord sur une maquette (canvas de design séparé, deux pages) avant intégration réelle. Page 1 : la grande carte reste inchangée, avec ajout d'une vignette de repère en bas à droite (getLocatorMapImage) — zoom fixe (toujours le même cadrage, via des bornes géographiques par bassin, BASIN_LOCATOR_BOUNDS) sur la métropole nancéienne ou spinalienne selon le groupe, fond de carte seul (marqueurs et tracés masqués le temps de la capture, puisqu'ils changent d'un groupe à l'autre alors que la vignette doit rester identique pour tout le bassin) ; mise en cache par bassin (locatorMapCache) pour ne la générer qu'une fois lors de l'export groupé, invalidée si le fond de carte change en cours de session. Absente en vue générale (pas un bassin unique). Page 2 : l'ancien bilan textuel (drawGroupBilan, une liste de phrases + un petit tableau des modes) est remplacé par un bilan visuel (drawGroupBilanVisual) — quatre cartes chiffrées (véhicules évités, CO2/coût/distance évités en %), puis un bloc de comparaison seul·e vs covoituré (deux barres CO2 et coût, plus une barre empilée de répartition des modes avec légende), désormais affiché EN HAUT de page (avant le tableau, alors qu'il était affiché après) ; sa taille est fixe, ne dépendant plus du nombre de modes (LAYOUT_LEVELS perd modeFs/modeCp et estimateBilanHeight disparaît, devenus inutiles — seul le tableau détaillé compacte encore sa police selon le nombre de lignes). Réutilisé tel quel pour le bilan global de l'export groupé (drawGlobalSummaryPage), via toBilanShape() qui ramène computeGlobalSummary() à la même forme que computeGroupBilan(). Demande complémentaire de Valentin sur la maquette : séparer visuellement les équipages (conducteur·rice + ses passager·ères) dans le tableau détaillé — ajouté via une colonne repère étroite en tête de tableau (assignCrewColors), reprenant pour chaque équipage la couleur de son tracé sur la carte (palette désormais partagée sous le nom DRIVER_ROUTE_PALETTE, au lieu d'être une constante locale à traceRoutes) ; non intégré·es et indépendant·es restent en gris neutre, hors équipage. Validé par un jeu de tests isolés (bilan visuel avec et sans titre, regroupement de deux équipages consécutifs avec bonne couleur héritée par les passager·ères, choix de palier du tableau selon l'espace disponible, cas zéro personne concernée sans division par zéro) et par les 38/38 tests existants de tests_covoiturage.html, non affectés par ce chantier (aucune fonction qui y est dupliquée n'a été touchée)." },
 ];
 
 // ------------------------------------------------------------------
