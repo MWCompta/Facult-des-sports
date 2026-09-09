@@ -55,12 +55,40 @@ const TRANSPORT_PROFILES = {
   "Moto / Scooter / Deux-roues motorisé": { emission: 95, cost: 0.35, kind: 'driving' },
   "Bus/Tram": { emission: 90, cost: 0, kind: 'driving', speedKmh: 20 },
   "Train": { emission: 25, cost: 0, kind: 'driving', speedKmh: 40 },
+  "Vélo mécanique / Roller / Trottinette": { emission: 0, cost: 0, kind: 'cycling' },
   "Vélo électrique / Trottinette électrique": { emission: 20, cost: 0, kind: 'cycling' },
   "À pied": { emission: 0, cost: 0, kind: 'foot' }
 };
 function profileFor(mode) {
   return TRANSPORT_PROFILES[mode] || TRANSPORT_PROFILES["Voiture individuelle (seul(e))"];
 }
+
+// Icônes et couleurs par mode — dupliquées depuis carte_groupes_nancy.html. Un mode
+// manquant dans MODE_COLORS (bug réel trouvé et corrigé le 9 sept : "Vélo mécanique /
+// Roller / Trottinette" y manquait) ne plante rien mais perd sa couleur de fond dans les
+// exports PDF/PNG — voir le test "les trois listes de modes restent synchronisées".
+const TRANSPORT_ICONS = {
+  "Voiture individuelle (seul(e))": "🚗",
+  "Covoiturage en tant que Conducteur / Conductrice": "🚗⭐",
+  "Covoiturage en tant que Passager / Passagère": "🧍🚗",
+  "Bus/Tram": "🚌",
+  "Train": "🚆",
+  "Moto / Scooter / Deux-roues motorisé": "🏍️",
+  "Vélo mécanique / Roller / Trottinette": "🚲",
+  "Vélo électrique / Trottinette électrique": "🛴",
+  "À pied": "🚶"
+};
+const MODE_COLORS = {
+  "Voiture individuelle (seul(e))": [219, 234, 254],
+  "Covoiturage en tant que Conducteur / Conductrice": [219, 234, 254],
+  "Covoiturage en tant que Passager / Passagère": [219, 234, 254],
+  "Moto / Scooter / Deux-roues motorisé": [254, 243, 199],
+  "Bus/Tram": [220, 252, 231],
+  "Train": [250, 232, 255],
+  "Vélo mécanique / Roller / Trottinette": [255, 218, 185],
+  "Vélo électrique / Trottinette électrique": [255, 228, 230],
+  "À pied": [241, 245, 249]
+};
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -119,6 +147,116 @@ function detectColumnMapping(headerRow) {
   };
   const missing = HEADER_REQUIRED_FIELDS.filter(k => mapping[k] === undefined);
   return { mapping, missing };
+}
+
+// Détection des doublons probables à l'import — dupliquée depuis carte_groupes_nancy.html.
+function detectDuplicates(rows) {
+  const fieldsToCompare = ['nom', 'adresse', 'ville', 'deplacement', 'deplacementSecours', 'situation', 'places'];
+  const groups = new Map();
+  rows.forEach(r => {
+    const key = (String(r.nom || '') + '|' + String(r.adresse || '')).toLowerCase().trim();
+    if (!key || key === '|') return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  const result = [];
+  groups.forEach(groupRows => {
+    if (groupRows.length < 2) return;
+    const first = groupRows[0];
+    const identical = groupRows.every(r => fieldsToCompare.every(f => String(r[f] ?? '') === String(first[f] ?? '')));
+    result.push({ rows: groupRows, identical });
+  });
+  return result;
+}
+
+// Pipeline de géocodage (réseau) — dupliqué depuis carte_groupes_nancy.html, avec un mock
+// de fetch ci-dessous pour tester sans appel réseau réel.
+function createRateGate(maxPerSecond) {
+  const minInterval = 1000 / maxPerSecond;
+  let nextTime = Date.now();
+  return async function acquire() {
+    const now = Date.now();
+    const wait = Math.max(0, nextTime - now);
+    nextTime = Math.max(now, nextTime) + minInterval;
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  };
+}
+async function geocodeAddress(query, postcode) {
+  let url = `https://data.geopf.fr/geocodage/search/?q=${encodeURIComponent(query)}&limit=1`;
+  if (postcode) url += `&postcode=${encodeURIComponent(postcode)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const json = await res.json();
+  if (!json.features || !json.features.length) return null;
+  const f = json.features[0];
+  return {
+    lat: f.geometry.coordinates[1],
+    lon: f.geometry.coordinates[0],
+    score: f.properties ? f.properties.score : undefined,
+    label: f.properties ? f.properties.label : undefined
+  };
+}
+async function geocodeAddressWithRetry(query, postcode, gate) {
+  const GEOCODE_MAX_RETRIES = 2;
+  for (let attempt = 0; attempt <= GEOCODE_MAX_RETRIES; attempt++) {
+    await gate();
+    try {
+      return await geocodeAddress(query, postcode);
+    } catch (err) {
+      if (attempt === GEOCODE_MAX_RETRIES) return null;
+      await new Promise(r => setTimeout(r, 10 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+async function geocodeBatch(rows, onProgress) {
+  let idx = 0, done = 0;
+  const results = new Array(rows.length);
+  const gate = createRateGate(50);
+  async function worker() {
+    while (idx < rows.length) {
+      const i = idx++;
+      const r = rows[i];
+      results[i] = await geocodeAddressWithRetry(`${r.rue} ${r.ville}`.trim(), r.cp, gate);
+      done++;
+      onProgress(done, rows.length);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(8, rows.length) }, worker));
+  return results;
+}
+// Reproduit exactement la logique du bouton "Réessayer les adresses non géolocalisées"
+// (écouteur retry-geocode-btn dans carte_groupes_nancy.html) — voir les tests plus bas
+// pour le bug corrigé le 9 sept (perte silencieuse de la 2e adresse après une reprise).
+async function simulateRetryGeocode(rowsToRetry) {
+  const retryTasks = [];
+  rowsToRetry.forEach(r => {
+    r._retryTask1 = retryTasks.length;
+    retryTasks.push({ rue: r.rue, cp: r.cp, ville: r.ville });
+    if (r.has2) {
+      r._retryTask2 = retryTasks.length;
+      retryTasks.push({ rue: r.rue2, cp: r.cp2, ville: r.ville2 });
+    }
+  });
+  const geoResults = await geocodeBatch(retryTasks, () => {});
+  const recovered = [];
+  const stillFailed = [];
+  rowsToRetry.forEach(r => {
+    const g = geoResults[r._retryTask1];
+    if (!g) { stillFailed.push(r); return; }
+    const row = {
+      id: r.id, groupe: r.groupe, nom: r.nom,
+      adresse: r.rue, ville: r.ville,
+      latPrimary: g.lat, lonPrimary: g.lon, adressePrimary: r.rue, villePrimary: r.ville,
+      lat: g.lat, lon: g.lon
+    };
+    if (r.has2 && geoResults[r._retryTask2]) {
+      const g2 = geoResults[r._retryTask2];
+      row.lat2 = g2.lat; row.lon2 = g2.lon; row.adresse2 = r.rue2; row.ville2 = r.ville2;
+    }
+    recovered.push(row);
+  });
+  return { recovered, stillFailed };
 }
 
 // Consolidation par économies (Clarke & Wright) — décide combien de personnes cochées
@@ -203,12 +341,24 @@ function runConstruction(drivers, candidates, destIdx, capacities, T, D, MAX_DET
 // Petit framework d'assertions
 // ------------------------------------------------------------------
 const results = [];
+// Certains tests (pipeline de géocodage) sont asynchrones : si fn() renvoie une promesse,
+// l'entrée est ajoutée tout de suite (pour garder l'ordre d'affichage) mais son résultat
+// n'est fixé qu'à la résolution ; toutes les promesses en attente (`pendingTests`) sont
+// attendues avant l'affichage final, plus bas dans ce fichier.
+const pendingTests = [];
 function test(name, fn) {
+  const entry = { name, pass: undefined };
+  results.push(entry);
   try {
-    fn();
-    results.push({ name, pass: true });
+    const ret = fn();
+    if (ret && typeof ret.then === 'function') {
+      pendingTests.push(ret.then(() => { entry.pass = true; }).catch(err => { entry.pass = false; entry.error = err.message; }));
+    } else {
+      entry.pass = true;
+    }
   } catch (err) {
-    results.push({ name, pass: false, error: err.message });
+    entry.pass = false;
+    entry.error = err.message;
   }
 }
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion échouée'); }
@@ -390,9 +540,92 @@ test('consolidation : personne n\'est perdu ni dupliqué', () => {
   assert(seen.size === 7, `attendu 7 personnes présentes exactement une fois, obtenu ${seen.size}`);
 });
 
+test('modes de transport : icônes, couleurs et profils restent synchronisés', () => {
+  const iconKeys = Object.keys(TRANSPORT_ICONS).sort();
+  const colorKeys = Object.keys(MODE_COLORS).sort();
+  const profileKeys = Object.keys(TRANSPORT_PROFILES).sort();
+  assert(JSON.stringify(iconKeys) === JSON.stringify(colorKeys),
+    `un mode existe dans TRANSPORT_ICONS mais pas MODE_COLORS (ou l'inverse) : ${iconKeys.filter(k => !colorKeys.includes(k)).concat(colorKeys.filter(k => !iconKeys.includes(k)))}`);
+  assert(JSON.stringify(iconKeys) === JSON.stringify(profileKeys),
+    `un mode existe dans TRANSPORT_ICONS mais pas TRANSPORT_PROFILES (ou l'inverse) : ${iconKeys.filter(k => !profileKeys.includes(k)).concat(profileKeys.filter(k => !iconKeys.includes(k)))}`);
+});
+
+test('detectDuplicates : même prénom+nom et même adresse → doublon détecté', () => {
+  const rows = [
+    { id: 1, nom: 'Jean Dupont', adresse: '10 Rue A', ville: 'Nancy' },
+    { id: 2, nom: 'Jean Dupont', adresse: '10 Rue A', ville: 'Nancy' }
+  ];
+  const dups = detectDuplicates(rows);
+  assert(dups.length === 1, 'un groupe de doublon attendu');
+  assert(dups[0].identical === true, 'les deux lignes sont identiques sur tous les champs comparés');
+});
+
+test('detectDuplicates : prénoms différents, même nom de famille et même adresse → PAS un doublon', () => {
+  // Cas concret : deux personnes différentes (ex. fratrie) partageant nom de famille et
+  // adresse ne doivent pas être confondues — le prénom fait partie de la clé (r.nom
+  // contient "Prénom Nom", voir le commentaire dans carte_groupes_nancy.html).
+  const rows = [
+    { id: 1, nom: 'Marie Dupont', adresse: '10 Rue A', ville: 'Nancy' },
+    { id: 2, nom: 'Jean Dupont', adresse: '10 Rue A', ville: 'Nancy' }
+  ];
+  const dups = detectDuplicates(rows);
+  assert(dups.length === 0, `attendu aucun doublon (prénoms différents), obtenu ${dups.length}`);
+});
+
+test('detectDuplicates : même prénom+nom et même adresse mais ville différente → doublon signalé, marqué "différent"', () => {
+  // Comportement choisi explicitement (pas une ville dans la clé, sur décision de Valentin :
+  // moins de risque de rater un vrai doublon que de risque d'en signaler un faux) : ce cas
+  // reste groupé, mais "identical" doit être false pour que l'écran affiche la comparaison
+  // côte à côte plutôt qu'un bouton d'exclusion unique.
+  const rows = [
+    { id: 1, nom: 'Jean Dupont', adresse: '10 Rue A', ville: 'Nancy' },
+    { id: 2, nom: 'Jean Dupont', adresse: '10 Rue A', ville: 'Laxou' }
+  ];
+  const dups = detectDuplicates(rows);
+  assert(dups.length === 1, 'un groupe de doublon attendu (ville non prise en compte dans la clé)');
+  assert(dups[0].identical === false, 'la différence de ville doit être détectée (identical = false)');
+});
+
+// Mock de fetch : simule le service de géocodage pour les tests du pipeline réseau
+// ci-dessous, sans appel réseau réel.
+const GEOCODED_ADDRESSES = {
+  '10 Rue A Valide': { lat: 48.1, lon: 6.1, score: 0.9, label: '10 Rue A' },
+  '20 Rue B ValideSecondaire': { lat: 48.2, lon: 6.2, score: 0.9, label: '20 Rue B' }
+};
+window.fetch = async (url) => {
+  const q = decodeURIComponent(new URL(url).searchParams.get('q'));
+  const hit = GEOCODED_ADDRESSES[q];
+  return {
+    ok: true,
+    json: async () => hit
+      ? { features: [{ geometry: { coordinates: [hit.lon, hit.lat] }, properties: { score: hit.score, label: hit.label } }] }
+      : { features: [] }
+  };
+};
+
+test('bouton "Réessayer" : une adresse secondaire n\'est plus perdue après récupération', async () => {
+  // Bug corrigé le 9 sept : la ligne récupérée ne renseignait ni latPrimary/lonPrimary ni
+  // lat2/lon2, désactivant silencieusement "adresse la plus proche" pour cette personne.
+  const row = { id: 1, nom: 'Jean Dupont', rue: '10 Rue A', cp: '', ville: 'Valide', has2: true, rue2: '20 Rue B', cp2: '', ville2: 'ValideSecondaire' };
+  const { recovered, stillFailed } = await simulateRetryGeocode([row]);
+  assert(stillFailed.length === 0, 'la ligne devait être récupérée, pas rester en échec');
+  assert(recovered.length === 1, 'une ligne récupérée attendue');
+  const r = recovered[0];
+  assert(r.latPrimary === 48.1 && r.lonPrimary === 6.1, 'latPrimary/lonPrimary renseignés');
+  assert(r.lat2 === 48.2 && r.lon2 === 6.2, 'lat2/lon2 renseignés (la 2e adresse est préservée)');
+  assert(r.adresse2 === '20 Rue B' && r.ville2 === 'ValideSecondaire', 'adresse2/ville2 renseignés');
+});
+
+test('bouton "Réessayer" : une adresse toujours introuvable reste en échec sans planter', async () => {
+  const row = { id: 2, nom: 'Bob Introuvable', rue: '99 Rue Inconnue', cp: '', ville: 'Nulle Part', has2: false };
+  const { recovered, stillFailed } = await simulateRetryGeocode([row]);
+  assert(recovered.length === 0 && stillFailed.length === 1, 'doit rester en échec, sans lever d\'erreur');
+});
+
 // ------------------------------------------------------------------
-// Affichage
+// Affichage — attend d'abord que les tests asynchrones (géocodage) soient résolus.
 // ------------------------------------------------------------------
+Promise.all(pendingTests).then(() => {
 const container = document.getElementById('results');
 results.forEach(r => {
   const div = document.createElement('div');
@@ -404,6 +637,7 @@ const nPass = results.filter(r => r.pass).length;
 const summary = document.getElementById('summary');
 summary.className = nPass === results.length ? 'ok' : 'ko';
 summary.textContent = `${nPass} / ${results.length} tests réussis`;
+});
 </script>
 </body>
 </html>

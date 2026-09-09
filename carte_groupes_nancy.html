@@ -490,6 +490,7 @@ const MODE_COLORS = {
   "Moto / Scooter / Deux-roues motorisé": [254, 243, 199],
   "Bus/Tram": [220, 252, 231],
   "Train": [250, 232, 255],
+  "Vélo mécanique / Roller / Trottinette": [255, 218, 185],
   "Vélo électrique / Trottinette électrique": [255, 228, 230],
   "À pied": [241, 245, 249]
 };
@@ -942,7 +943,7 @@ function renderMemberList() {
       st.driver = cb.checked;
       routeResult = null;
       unassignedIds = new Set();
-  lastTraceData = null;
+      lastTraceData = null;
       routeLayerGroup.clearLayers();
       document.getElementById('route-results').innerHTML = '';
       renderMarkers();
@@ -965,7 +966,7 @@ function renderMemberList() {
       if (st.excluded) st.driver = false;
       routeResult = null;
       unassignedIds = new Set();
-  lastTraceData = null;
+      lastTraceData = null;
       routeLayerGroup.clearLayers();
       document.getElementById('route-results').innerHTML = '';
       renderMemberList();
@@ -2890,31 +2891,53 @@ document.getElementById('retry-geocode-btn').addEventListener('click', async () 
   btn.disabled = true;
 
   const subtitle = document.getElementById('subtitle');
-  const originalSubtitle = subtitle.textContent;
+
+  // Reconstruit les tâches de géocodage comme au premier import : l'adresse principale de
+  // chaque ligne, plus son adresse secondaire si la personne en avait indiqué deux — sinon
+  // celle-ci restait perdue après un retour réussi (elle n'avait jamais été redemandée, ni
+  // ses champs latPrimary/lat2 renseignés, ce qui désactivait silencieusement pour cette
+  // personne le bouton "adresse la plus proche").
+  const retryTasks = [];
+  rowsToRetry.forEach(r => {
+    r._retryTask1 = retryTasks.length;
+    retryTasks.push({ rue: r.rue, cp: r.cp, ville: r.ville });
+    if (r.has2) {
+      r._retryTask2 = retryTasks.length;
+      retryTasks.push({ rue: r.rue2, cp: r.cp2, ville: r.ville2 });
+    }
+  });
+
   subtitle.textContent = `Nouvel essai : 0 / ${rowsToRetry.length}…`;
-  const geoResults = await geocodeBatch(rowsToRetry, (done, total) => {
+  const geoResults = await geocodeBatch(retryTasks, (done, total) => {
     subtitle.textContent = `Nouvel essai : ${done} / ${total}…`;
   });
 
   const recovered = [];
   const stillFailed = [];
   let lowConfidence = 0;
-  rowsToRetry.forEach((r, i) => {
-    const g = geoResults[i];
+  rowsToRetry.forEach(r => {
+    const g = geoResults[r._retryTask1];
     if (!g) { stillFailed.push(r); return; }
     if (typeof g.score === 'number' && g.score < GEOCODE_SCORE_THRESHOLD) lowConfidence++;
-    recovered.push({
+    const row = {
       id: r.id, groupe: r.groupe, nom: r.nom,
       adresse: r.rue, ville: r.ville,
-      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
+      latPrimary: g.lat, lonPrimary: g.lon, adressePrimary: r.rue, villePrimary: r.ville,
       lat: g.lat, lon: g.lon,
+      deplacement: r.deplacement, deplacementSecours: r.deplacementSecours, situation: r.situation, places: r.places,
       geocodeScore: (typeof g.score === 'number') ? g.score : undefined,
       geocodeLabel: g.label
-    });
+    };
+    if (r.has2 && geoResults[r._retryTask2]) {
+      const g2 = geoResults[r._retryTask2];
+      row.lat2 = g2.lat; row.lon2 = g2.lon; row.adresse2 = r.rue2; row.ville2 = r.ville2;
+    }
+    recovered.push(row);
   });
 
   failedImportRows = stillFailed;
   data = data.concat(recovered);
+  applyClosestAddressPreference();
   duplicateGroups = detectDuplicates(data);
   initializeAllMemberStates();
   subtitle.textContent = `${data.length} adresses géolocalisées.`;
@@ -2940,6 +2963,11 @@ function detectDuplicates(rows) {
   const fieldsToCompare = ['nom', 'adresse', 'ville', 'deplacement', 'deplacementSecours', 'situation', 'places'];
   const groups = new Map();
   rows.forEach(r => {
+    // Le regroupement se fait sur prénom + nom + adresse (rue) — PAS sur la ville ni le
+    // code postal (choix explicite de Valentin : moins de risque de rater un vrai doublon
+    // que de risque d'en signaler un faux). Note : r.nom contient déjà "Prénom Nom" (les
+    // deux sont concaténés dès l'import, voir plus haut) — il n'existe pas de champ nom de
+    // famille séparé à ce stade, donc cette clé couvre déjà prénom + nom + adresse.
     const key = (String(r.nom || '') + '|' + String(r.adresse || '')).toLowerCase().trim();
     if (!key || key === '|') return;
     if (!groups.has(key)) groups.set(key, []);
@@ -3226,6 +3254,7 @@ const PROJECT_HISTORY = [
   { theme: "Groupes, destinations et proximité", text: "Deux changements sur \"Recréer les groupes par proximité\". (1) Le rapport final n'affiche plus un simple avertissement conditionnel (fourchette 28-31) : il liste maintenant, pour chaque groupe créé, le nombre de personnes et le nombre de conducteur·rices potentiel·les. (2) Nouvelle contrainte lors de la création des groupes : l'algorithme essaie de garantir au moins MIN_CAR_PER_GROUP (constante ajustable, valeur actuelle : 3) personnes en capacité de conduire par groupe — voiture individuelle ou covoiturage conducteur, en mode principal OU de secours — via une première passe d'affectation prioritaire (par proximité aussi) avant de compléter le reste normalement. Si la population totale ne compte pas assez de conducteur·rices potentiel·les pour que TOUS les groupes atteignent ce minimum, un avertissement chiffré apparaît dans la boîte de confirmation avant de lancer l'opération, et les groupes concernés sont marqués ⚠️ dans le rapport final — sans jamais laisser quiconque sans groupe ni déséquilibrer les tailles. Validé : sans contrainte la géographie prime seule (comportement inchangé) ; avec juste assez de conducteur·rices disponibles, le minimum est atteint dans TOUS les groupes ; en cas de pénurie, l'algorithme fait au mieux sans jamais planter ni oublier personne ; le message de confirmation prévient correctement en cas d'insuffisance chiffrée." },
   { theme: "Données, import et géocodage", text: "Chantier de fiabilisation de l'import lancé (repéré comme point ouvert lors de la session précédente) : les colonnes du fichier importé sont maintenant identifiées par mot-clé dans la ligne d'en-tête (ex. \"nom\", \"prénom\", \"groupe\", \"rue\"/\"adresse\", \"code postal\", \"ville\", \"déplacement\", \"plan B\"/\"secours\", \"places\", \"abonnement\"/\"stabilité\", \"covoiturage\"+\"souhait\"), plutôt que par leur position fixe (C à Q) — un réordonnancement futur des questions du Google Form ne décale donc plus silencieusement l'import. Repli automatique sur les positions fixes historiques, avec avertissement explicite affiché à l'utilisateur, si l'en-tête ne permet pas d'identifier tous les champs indispensables (nom, prénom, groupe, adresse, mode de déplacement) — pour ne jamais dégrader silencieusement un import qui fonctionnait avant. Piège corrigé en cours de route : le mot-clé \"place\" est une sous-chaîne de \"déplacement\" (capturait à tort la colonne du mode de déplacement comme colonne \"places\") et \"adresse\" apparaît aussi dans \"Adresse e-mail\" (capturait à tort la colonne e-mail comme colonne rue) — les deux corrigés (mots entiers pour \"places\", exclusion de \"mail\" pour la colonne rue). Limite connue, assumée : les mots-clés ont été choisis sur des intitulés plausibles, pas sur l'en-tête réel du formulaire (non disponible pour écrire ce code) — à vérifier sur un vrai export avant de s'y fier pour une passation réelle ; en cas de désaccord de mots-clés, le repli avec avertissement protège d'un import silencieusement faux. Validé par 6 tests dédiés (en-tête actuel, en-tête réordonné, e-mail non confondu avec l'adresse, en-tête non reconnaissable déclenchant le repli, en-tête vide, accents/casse ignorés), ajoutés à tests_covoiturage.html — 27/27 tests passent." },
   { theme: "Documentation et lisibilité du code", text: "Nouvelle règle actée avec Valentin : chaque changement de code doit désormais s'accompagner d'une entrée dans cet historique (déjà la pratique jusqu'ici, maintenant formalisée comme un accord explicite). Passage de relecture complet du fichier (les ~3000 lignes, aucune ligne non lue) pour ajouter des repères de navigation, sans toucher au comportement : un sommaire en tête du script (30 sections numérotées, correspondance directe avec des bannières identiques plus bas, Ctrl+F le titre en MAJUSCULES pour y aller), et des bannières de section ajoutées à tous les endroits qui n'en avaient pas. Deux confusions préexistantes corrigées au passage (commentaires uniquement, aucun changement de comportement) : un commentaire décrivant l'algorithme de ramassage (construction + amélioration locale) était placé au-dessus de haversine() au lieu d'être au-dessus de traceRoutes() où il s'applique réellement ; et le commentaire décrivant la structure du formulaire d'import était au-dessus de regroupByGeography() (la recréation de groupes par proximité) au lieu d'être au-dessus du vrai gestionnaire d'import (l'écouteur sur csv-input) — les deux déplacés au bon endroit. Nouveau thème \"Documentation et lisibilité du code\" créé pour ce type d'entrée, aucun thème existant ne convenant." },
+  { theme: "Données, import et géocodage", text: "Relecture complète demandée par Valentin (recherche d'erreurs et de code non pertinent) : quatre corrections appliquées. (1) MODE_COLORS n'avait pas d'entrée pour \"Vélo mécanique / Roller / Trottinette\", pourtant présent dans TRANSPORT_ICONS et TRANSPORT_PROFILES depuis son ajout — ce mode s'affichait sans couleur de fond (blanc) dans les exports PDF/PNG, contrairement à tous les autres ; couleur ajoutée. (2) Le bouton \"Réessayer les adresses non géolocalisées\" ne redemandait que l'adresse principale : une personne ayant fourni deux adresses et dont la principale avait échoué au premier import perdait alors définitivement sa deuxième adresse une fois récupérée (latPrimary/lonPrimary/lat2/lon2 jamais renseignés) — la case \"adresse la plus proche\" n'avait plus alors aucun effet pour elle, silencieusement. Corrigé : la reprise redemande maintenant aussi l'adresse secondaire si la personne en avait indiqué une, et reconstruit la ligne à l'identique de l'import initial ; applyClosestAddressPreference() est aussi rappelée après la reprise, ce qui ne l'était pas non plus. (3) Doublon détecté sur la détection de doublons (detectDuplicates) : la clé de regroupement (nom complet + adresse, sans ville) était incohérente avec la comparaison \"identique\" (qui inclut la ville) sans que ce soit documenté ; clarifié par un commentaire — Valentin a confirmé vouloir prénom + nom + adresse (déjà le cas : le champ `nom` contient \"Prénom Nom\" concaténés dès l'import, il n'existe pas de nom de famille séparé à ce stade) et a explicitement refusé d'y ajouter la ville ou le code postal (plus de risque de rater un vrai doublon que d'en signaler un faux) : comportement inchangé, juste rendu explicite. (4) Indentation corrigée à deux endroits (renderMemberList) où une ligne `lastTraceData = null;` avait un retrait à 2 espaces au lieu de 6 — sans effet fonctionnel. Nettoyage additionnel : une variable `originalSubtitle` non utilisée a été retirée du gestionnaire de reprise pendant sa réécriture. 6 tests ajoutés à tests_covoiturage.html pour ces quatre points (synchronisation des trois listes de modes de transport, doublons avec prénoms différents/villes différentes, préservation de la 2e adresse après reprise avec mock réseau) — 33/33 tests passent. Un point plus large signalé mais volontairement non traité (demande explicite d'en discuter avant) : aucun verrou global n'empêche de lancer une autre action longue (import, export groupé, recréation des groupes) pendant qu'une autre est déjà en cours." },
 ];
 
 // ------------------------------------------------------------------
