@@ -693,15 +693,42 @@ async function captureMapCanvas() {
 // donne une carte plus lisible à l'impression, comme un clic sur "+" juste avant d'exporter.
 // La vue à l'écran est restaurée juste après la capture (uniquement affectée le temps de
 // celle-ci, jamais laissée modifiée pour l'utilisateur).
+// Vérifie l'état réel du DOM (plutôt que l'évènement 'load' de Leaflet, qui peut se
+// déclencher avant que le navigateur ait fini de peindre certaines tuiles) : c'est
+// exactement ce que html2canvas va lire au moment de la capture. Tant qu'une tuile n'est
+// pas complètement chargée, Leaflet laisse voir le fond gris par défaut du conteneur
+// (.leaflet-container { background:#ddd }) à travers elle — la cause du "filtre gris"
+// visible sur les cartes exportées quand la capture arrivait trop tôt après un changement
+// de vue (zoom avant capture, vignette de repère).
+function allMapTilesLoaded() {
+  const imgs = document.querySelectorAll('#map .leaflet-tile-pane img');
+  return imgs.length > 0 && [...imgs].every(img => img.complete && img.naturalWidth > 0);
+}
+async function waitForTilesToLoad(timeoutMs = 5000) {
+  const start = Date.now();
+  // Laisse à Leaflet le temps de créer les nouvelles tuiles dans le DOM après un
+  // changement de vue avant de vérifier — sinon on ne verrait que les anciennes (déjà
+  // chargées) et on conclurait à tort que tout est prêt.
+  await sleep(80);
+  while (!allMapTilesLoaded() && Date.now() - start < timeoutMs) {
+    await sleep(100);
+  }
+}
+
+// Un cran de zoom en plus par rapport à la vue à l'écran, appliqué UNIQUEMENT à la capture
+// de la carte principale de l'export (page 1) : le cadrage automatique (fitBounds sur les
+// points du groupe) laisse souvent une marge large autour du tracé — se rapprocher d'un cran
+// donne une carte plus lisible à l'impression, comme un clic sur "+" juste avant d'exporter.
+// La vue à l'écran est restaurée juste après la capture (uniquement affectée le temps de
+// celle-ci, jamais laissée modifiée pour l'utilisateur).
 async function captureMainMapForExport() {
   const originalCenter = map.getCenter();
   const originalZoom = map.getZoom();
   const targetZoom = Math.min(originalZoom + 1, map.getMaxZoom());
   try {
     if (targetZoom !== originalZoom) {
-      const tilesLoaded = waitForTilesToLoad();
       map.setZoom(targetZoom, { animate: false });
-      await tilesLoaded;
+      await waitForTilesToLoad();
       await new Promise(r => requestAnimationFrame(r));
     }
     return await captureMapCanvas();
@@ -710,52 +737,25 @@ async function captureMainMapForExport() {
   }
 }
 
-function activeTileLayers() {
-  const layers = [];
-  map.eachLayer(l => {
-    if (l instanceof L.TileLayer) layers.push(l);
-    else if (l instanceof L.LayerGroup && l !== markersLayer && l !== routeLayerGroup) {
-      l.eachLayer(sub => { if (sub instanceof L.TileLayer) layers.push(sub); });
-    }
-  });
-  return layers;
-}
-
-// Attend que les tuiles du fond de carte actif aient fini de charger, avec un délai maximum
-// de secours (au cas où l'évènement 'load' ne se déclencherait pas pour une raison ou une
-// autre — on préfère une vignette possiblement incomplète à un export qui reste bloqué).
-function waitForTilesToLoad(timeoutMs = 3000) {
-  const layers = activeTileLayers();
-  if (layers.length === 0) return Promise.resolve();
-  return new Promise(resolve => {
-    let remaining = layers.length;
-    const timer = setTimeout(resolve, timeoutMs);
-    layers.forEach(l => l.once('load', () => {
-      remaining--;
-      if (remaining <= 0) { clearTimeout(timer); resolve(); }
-    }));
-  });
-}
-
-// Petite carte de repère (page 1 de l'export PDF) : zoom fixe sur la métropole du bassin
-// concerné (nancéien ou spinalien — toujours le même cadrage géographique, voir
-// BASIN_LOCATOR_BOUNDS), avec les MÊMES marqueurs et tracés que la grande carte — c'est
-// justement pour resituer le trajet du groupe dans une zone dense en population et en routes
-// que cette vignette existe ; un simple fond de carte vide n'aurait aucun sens. Pas de mise
-// en cache : son contenu (marqueurs, tracés) change à chaque groupe, seul le cadrage reste
-// fixe d'un groupe à l'autre du même bassin.
+// Petite carte de repère (page 1 de l'export PDF) : zoom fixe et serré sur la métropole du
+// bassin concerné (nancéien ou spinalien — toujours le même cadrage géographique, resserré
+// sur les seules communes de l'agglomération, voir BASIN_LOCATOR_BOUNDS), avec les MÊMES
+// marqueurs et tracés que la grande carte — c'est justement pour resituer le trajet du
+// groupe dans une zone dense en population et en routes que cette vignette existe ; un
+// simple fond de carte vide n'aurait aucun sens. Pas de mise en cache : son contenu
+// (marqueurs, tracés) change à chaque groupe, seul le cadrage reste fixe d'un groupe à
+// l'autre du même bassin.
 const BASIN_LOCATOR_BOUNDS = {
-  nancy: L.latLngBounds([48.595, 6.03], [48.735, 6.29]),
-  epinal: L.latLngBounds([48.135, 6.33], [48.235, 6.58])
+  nancy: L.latLngBounds([48.615, 6.09], [48.725, 6.235]),
+  epinal: L.latLngBounds([48.155, 6.375], [48.215, 6.515])
 };
 async function captureLocatorMap(group) {
   const basin = basinOf(group);
   const originalCenter = map.getCenter();
   const originalZoom = map.getZoom();
   try {
-    const tilesLoaded = waitForTilesToLoad();
     map.fitBounds(BASIN_LOCATOR_BOUNDS[basin], { animate: false });
-    await tilesLoaded;
+    await waitForTilesToLoad();
     await new Promise(r => requestAnimationFrame(r));
     const canvas = await captureMapCanvas();
     return { basin, dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height };
@@ -3685,6 +3685,7 @@ const PROJECT_HISTORY = [
   { theme: "Algorithme de covoiturage", text: "Vérification demandée par Valentin de \"Mode mauvais temps\" et \"Prendre tout le monde en compte\" : les deux remplissent bien leur rôle (vérifié par des scénarios isolés — bascule vers le plan B uniquement pour les personnes à pied ayant un vrai plan B, sans toucher aux autres modes ; \"tout le monde\" rend bien chacun·e candidat·e au ramassage et vide la catégorie indépendant·e). Un point mineur relevé au passage : le bouton 🚗+ (\"forcer dans le covoiturage\") restait affiché même quand \"tout le monde\" le rendait déjà inutile. Proposition initiale de Valentin pour \"tout le monde\" : cocher littéralement la case de tout le monde dans tous les groupes, avec retour à l'état initial si redécochée. Déconseillé tel quel et remplacé par l'équivalent sûr déjà utilisé pour les passager·ères (entrée du 9 sept) : cocher réellement la case (st.driver = true) pour un mode sans véhicule (bus, vélo, moto, à pied) créerait une conductrice fictive sans voiture, faussant l'algorithme (une personne réellement véhiculée y perdrait une place dans une voiture qui n'existe pas). Solution retenue, validée par 8 scénarios isolés : la case cochée-désactivée déjà utilisée pour les passager·ères s'étend à tout mode sans véhicule dès que \"tout le monde\" est actif — dans le groupe affiché, quel qu'il soit, sans calcul préalable sur les 20 groupes. Les personnes ayant réellement une voiture gardent toujours leur case normale et cliquable (jamais forcées conductrices par ce mode). Le bouton 🚗+ est masqué quand \"tout le monde\" est actif (devenu redondant). Comme rien n'est modifié dans st.driver pour les personnes sans véhicule, décocher \"tout le monde\" restaure automatiquement l'affichage d'origine sans code de restauration nécessaire." },
   { theme: "Export PDF / PNG", text: "Refonte visuelle demandée par Valentin (\"beaucoup plus de design\", force de proposition demandée) — validée d'abord sur une maquette (canvas de design séparé, deux pages) avant intégration réelle. Page 1 : la grande carte reste inchangée, avec ajout d'une vignette de repère en bas à droite (getLocatorMapImage) — zoom fixe (toujours le même cadrage, via des bornes géographiques par bassin, BASIN_LOCATOR_BOUNDS) sur la métropole nancéienne ou spinalienne selon le groupe, fond de carte seul (marqueurs et tracés masqués le temps de la capture, puisqu'ils changent d'un groupe à l'autre alors que la vignette doit rester identique pour tout le bassin) ; mise en cache par bassin (locatorMapCache) pour ne la générer qu'une fois lors de l'export groupé, invalidée si le fond de carte change en cours de session. Absente en vue générale (pas un bassin unique). Page 2 : l'ancien bilan textuel (drawGroupBilan, une liste de phrases + un petit tableau des modes) est remplacé par un bilan visuel (drawGroupBilanVisual) — quatre cartes chiffrées (véhicules évités, CO2/coût/distance évités en %), puis un bloc de comparaison seul·e vs covoituré (deux barres CO2 et coût, plus une barre empilée de répartition des modes avec légende), désormais affiché EN HAUT de page (avant le tableau, alors qu'il était affiché après) ; sa taille est fixe, ne dépendant plus du nombre de modes (LAYOUT_LEVELS perd modeFs/modeCp et estimateBilanHeight disparaît, devenus inutiles — seul le tableau détaillé compacte encore sa police selon le nombre de lignes). Réutilisé tel quel pour le bilan global de l'export groupé (drawGlobalSummaryPage), via toBilanShape() qui ramène computeGlobalSummary() à la même forme que computeGroupBilan(). Demande complémentaire de Valentin sur la maquette : séparer visuellement les équipages (conducteur·rice + ses passager·ères) dans le tableau détaillé — ajouté via une colonne repère étroite en tête de tableau (assignCrewColors), reprenant pour chaque équipage la couleur de son tracé sur la carte (palette désormais partagée sous le nom DRIVER_ROUTE_PALETTE, au lieu d'être une constante locale à traceRoutes) ; non intégré·es et indépendant·es restent en gris neutre, hors équipage. Validé par un jeu de tests isolés (bilan visuel avec et sans titre, regroupement de deux équipages consécutifs avec bonne couleur héritée par les passager·ères, choix de palier du tableau selon l'espace disponible, cas zéro personne concernée sans division par zéro) et par les 38/38 tests existants de tests_covoiturage.html, non affectés par ce chantier (aucune fonction qui y est dupliquée n'a été touchée)." },
   { theme: "Export PDF / PNG", text: "Quatre corrections apportées par Valentin après un premier export réel, sur la refonte de l'entrée précédente. (1) La grande carte de la page 1 (capture directe de la vue à l'écran) laissait souvent une marge large autour du tracé — un cran de zoom en plus (captureMainMapForExport, comme un clic sur \"+\" juste avant la capture, vue à l'écran restaurée juste après) rapproche l'image. (2) La vignette de repère (bassin) masquait jusqu'ici marqueurs et tracés pour n'afficher qu'un fond de carte identique pour tout le bassin (avec mise en cache) — repéré par Valentin comme dénué de sens : sans les tracés, elle ne montre rien d'utile dans une zone dense en routes. Corrigé : captureLocatorMap (remplace getLocatorMapImage) garde marqueurs et tracés visibles, seul le cadrage géographique reste fixe par bassin ; la mise en cache par bassin, incompatible avec un contenu qui change à chaque groupe, est supprimée (plus simple, plus correcte). (3) Bug de police repéré sur la carte \"Véhicules évités\" : le texte apparaissait avec un espace entre chaque lettre et la flèche unicode \"→\" rendue comme des caractères illisibles — les polices intégrées de jsPDF (Helvetica/WinAnsi) ne supportent pas ce caractère, ce qui perturbe le calcul de largeur de splitTextToSize et casse le rendu de toute la ligne. Corrigé en reformulant la phrase sans flèche (déjà repéré ailleurs dans le fichier : le tiret cadratin \"—\" et le point médian \"·\", eux, font partie de l'encodage WinAnsi et s'affichent normalement). (4) Repéré par Valentin : CO2, coût et distance évités affichent TOUJOURS le même pourcentage, quel que soit le groupe — vérifié dans le code, ce n'est pas un hasard mais une conséquence structurelle de TRANSPORT_PROFILES (les trois modes voiture partagent le même g CO2/km et €/km, et ce sont les seuls modes des personnes \"concernées\" par le bilan : CO2 et coût sont donc de simples multiples du kilométrage, avec le même ratio évité que la distance). Les trois cartes séparées sont fusionnées en une seule (\"Impact évité\") : un pourcentage commun affiché une fois, suivi des trois valeurs absolues évitées (CO2, coût, distance) en dessous — la carte \"Véhicules évités\" reste inchangée à côté. Demande complémentaire, un espace entre équipages visiblement absent malgré la proposition initiale : ajouté via une ligne d'espacement fine et sans bordure insérée dans le tableau (buildGroupDetailPage) chaque fois que la clé d'équipage change (buildCrewInfo, qui remplace assignCrewColors et expose aussi ces clés) — les non intégré·es/indépendant·es restent groupé·es ensemble en fin de tableau, sans espace entre eux/elles. Validé par des tests isolés (absence de la flèche unicode dans le texte généré, une seule carte fusionnée au lieu de trois, espacement inséré uniquement entre équipages différents et jamais au sein du groupe hors équipage) et par les 38/38 tests existants de tests_covoiturage.html." },
+  { theme: "Export PDF / PNG", text: "Deux nouveaux retours de Valentin après export réel. (1) \"Filtre gris\" systématique sur les cartes exportées : cause identifiée — .leaflet-container a un fond gris par défaut (#ddd), visible par transparence tant qu'une tuile n'est pas complètement chargée ; comme la capture principale (zoom d'un cran, entrée précédente) ET la vignette de repère changent toutes deux la vue juste avant de capturer, une capture prise trop tôt (avant la fin du chargement des nouvelles tuiles) laissait ce gris transparaître un peu partout, lu comme un filtre. L'attente précédente (évènement 'load' de la couche Leaflet active) a été remplacée par une vérification directe du DOM (allMapTilesLoaded : toutes les <img> de .leaflet-tile-pane doivent être complete avec une largeur réelle) — exactement l'état que html2canvas va lire, donc plus fiable que l'évènement de la couche, qui peut se déclencher avant la fin de la peinture. activeTileLayers(), devenue inutile, est supprimée. (2) Zoom de la vignette de repère jugé insuffisant : les bornes géographiques par bassin (BASIN_LOCATOR_BOUNDS) ont été resserrées aux seules communes de l'agglomération (Métropole du Grand Nancy / agglomération spinalienne) plutôt qu'une zone plus large englobant les environs ruraux — non vérifié à l'oeil (pas d'accès navigateur dans cette session), à recontrôler sur un export réel." },
 ];
 
 // ------------------------------------------------------------------
