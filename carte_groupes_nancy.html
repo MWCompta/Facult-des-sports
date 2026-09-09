@@ -687,12 +687,6 @@ async function captureMapCanvas() {
   }
 }
 
-// Un cran de zoom en plus par rapport à la vue à l'écran, appliqué UNIQUEMENT à la capture
-// de la carte principale de l'export (page 1) : le cadrage automatique (fitBounds sur les
-// points du groupe) laisse souvent une marge large autour du tracé — se rapprocher d'un cran
-// donne une carte plus lisible à l'impression, comme un clic sur "+" juste avant d'exporter.
-// La vue à l'écran est restaurée juste après la capture (uniquement affectée le temps de
-// celle-ci, jamais laissée modifiée pour l'utilisateur).
 // Vérifie l'état réel du DOM (plutôt que l'évènement 'load' de Leaflet, qui peut se
 // déclencher avant que le navigateur ait fini de peindre certaines tuiles) : c'est
 // exactement ce que html2canvas va lire au moment de la capture. Tant qu'une tuile n'est
@@ -700,18 +694,33 @@ async function captureMapCanvas() {
 // (.leaflet-container { background:#ddd }) à travers elle — la cause du "filtre gris"
 // visible sur les cartes exportées quand la capture arrivait trop tôt après un changement
 // de vue (zoom avant capture, vignette de repère).
-function allMapTilesLoaded() {
-  const imgs = document.querySelectorAll('#map .leaflet-tile-pane img');
-  return imgs.length > 0 && [...imgs].every(img => img.complete && img.naturalWidth > 0);
-}
+function mapTileImgs() { return [...document.querySelectorAll('#map .leaflet-tile-pane img')]; }
+function unsettledMapTileImgs() { return mapTileImgs().filter(img => !img.complete); }
+// "En échec" : le navigateur a fini d'essayer (complete) mais l'image n'a rien à montrer
+// (naturalWidth à 0) — une tuile qui ne se chargera jamais toute seule, contrairement à une
+// tuile encore en cours de chargement.
+function brokenMapTileImgs() { return mapTileImgs().filter(img => img.complete && img.naturalWidth === 0); }
+
 async function waitForTilesToLoad(timeoutMs = 5000) {
   const start = Date.now();
   // Laisse à Leaflet le temps de créer les nouvelles tuiles dans le DOM après un
   // changement de vue avant de vérifier — sinon on ne verrait que les anciennes (déjà
   // chargées) et on conclurait à tort que tout est prêt.
   await sleep(80);
-  while (!allMapTilesLoaded() && Date.now() - start < timeoutMs) {
+  while (unsettledMapTileImgs().length > 0 && Date.now() - start < timeoutMs) {
     await sleep(100);
+  }
+  // Une tuile en échec (serveur de tuiles temporairement indisponible ou limité) ne se
+  // rechargera jamais d'elle-même : sans ce repli, elle laissait un petit carré gris
+  // définitif sur l'export, même après avoir attendu tout le délai ci-dessus pour rien.
+  // Une seule relance, avec un budget de temps propre et plus court.
+  const broken = brokenMapTileImgs();
+  if (broken.length > 0) {
+    broken.forEach(img => { const src = img.src; img.src = ''; img.src = src; });
+    const retryStart = Date.now();
+    while (unsettledMapTileImgs().length > 0 && Date.now() - retryStart < 2000) {
+      await sleep(100);
+    }
   }
 }
 
@@ -2167,38 +2176,67 @@ function drawKpiCards(doc, x, y, width, bilan) {
   return y + cardH;
 }
 
-// Deux barres (grise "seul·e" pleine largeur, verte "covoituré" proportionnelle) : la valeur
-// covoiturée est toujours ramenée à une fraction de la valeur "seul·e" pour rester visuellement
-// comparable d'une métrique à l'autre.
-function drawComparisonBlock(doc, x, y, w, title, seulVal, covoitVal, fmt) {
+// Un équipage par conducteur·rice survivant·e (voir buildTraceSummary/perPerson, section
+// 12 : chaque conducteur·rice est toujours immédiatement suivi·e de ses passager·ères dans
+// `concerned`) — reprend la même couleur que buildCrewInfo (même formule d'index sur
+// DRIVER_ROUTE_PALETTE), pour rester cohérent avec la colonne repère du tableau détaillé.
+function buildCrewSummaries(concerned) {
+  const crews = [];
+  concerned.forEach(p => {
+    if (p.role === 'Conducteur·rice') {
+      crews.push({
+        driver: p.nom, passengers: 0, covoitLabel: p.covoitLabel,
+        color: hexToRgb(DRIVER_ROUTE_PALETTE[crews.length % DRIVER_ROUTE_PALETTE.length])
+      });
+    } else if (p.role.startsWith('Passager') && crews.length > 0) {
+      crews[crews.length - 1].passengers++;
+    }
+  });
+  return crews;
+}
+
+// Mini-récapitulatif par équipage (une ligne par voiture) : remplace les anciennes barres de
+// comparaison seul·e/covoituré, redondantes avec la carte "Impact évité" juste au-dessus
+// (même pourcentage, déjà expliqué là où c'est calculé) — demandé par Valentin pour donner
+// une vue "par voiture" que ni les cartes chiffrées (uniquement des totaux) ni le grand
+// tableau plus bas (une ligne par personne) ne donnent directement.
+function drawCrewRecap(doc, x, y, w, h, crews) {
   doc.setFont(undefined, 'bold');
   doc.setFontSize(7);
   doc.setTextColor(31, 41, 59);
-  doc.text(title, x, y + 2.6);
+  doc.text('Équipages', x, y + 2.6);
   doc.setFont(undefined, 'normal');
 
-  const labelW = 12, valueW = 15, barX = x + labelW, barW = w - labelW - valueW, barH = 2.6;
-  let by = y + 6;
+  const rowH = 4.2;
+  const maxRows = Math.max(1, Math.floor((h - 6) / rowH));
+  const shown = crews.slice(0, maxRows);
+  let cy = y + 6.5;
+  doc.setFontSize(6.3);
+  shown.forEach(crew => {
+    doc.setFillColor(crew.color[0], crew.color[1], crew.color[2]);
+    doc.setDrawColor(150, 150, 150);
+    doc.rect(x, cy - 2.4, 2.6, 2.6, 'FD');
 
-  doc.setFontSize(6);
-  doc.setTextColor(91, 100, 114);
-  doc.text('Seul·e', x, by + barH - 0.4);
-  doc.setFillColor(226, 229, 234);
-  doc.rect(barX, by, barW, barH, 'F');
-  doc.text(fmt(seulVal), x + w, by + barH - 0.4, { align: 'right' });
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(31, 41, 59);
+    doc.text(crew.driver, x + 4.5, cy);
+    const nameW = doc.getTextWidth(crew.driver);
 
-  by += barH + 2.4;
-  doc.setTextColor(91, 100, 114);
-  doc.text('Covoit.', x, by + barH - 0.4);
-  doc.setFillColor(226, 229, 234);
-  doc.rect(barX, by, barW, barH, 'F');
-  const ratio = seulVal > 0 ? Math.min(1, Math.max(0, covoitVal / seulVal)) : 0;
-  doc.setFillColor(22, 130, 90);
-  doc.rect(barX, by, ratio > 0 ? Math.max(barW * ratio, 1.5) : 0, barH, 'F');
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(22, 130, 90);
-  doc.text(fmt(covoitVal), x + w, by + barH - 0.4, { align: 'right' });
-  doc.setFont(undefined, 'normal');
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(91, 100, 114);
+    const passagerText = crew.passengers > 0
+      ? `+${crew.passengers} passager${crew.passengers > 1 ? 's' : ''}`
+      : 'seul·e';
+    const detail = ` (${passagerText}) — ${crew.covoitLabel.replace('Conduit : ', '')}`;
+    const detailLines = doc.splitTextToSize(detail, Math.max(w - 4.5 - nameW - 2, 10));
+    doc.text(detailLines[0] || '', x + 4.5 + nameW, cy);
+    cy += rowH;
+  });
+  if (crews.length > shown.length) {
+    doc.setFontSize(6);
+    doc.setTextColor(91, 100, 114);
+    doc.text(`+ ${crews.length - shown.length} équipage(s) — voir le tableau ci-dessous`, x, cy);
+  }
   doc.setTextColor(0, 0, 0);
 }
 
@@ -2243,29 +2281,31 @@ function drawModeDistribution(doc, x, y, w, modeCount, total) {
   doc.setTextColor(0, 0, 0);
 }
 
-function drawComparisonAndModes(doc, x, y, width, bilan) {
+// `concerned` (le détail par personne) est optionnel : absent pour le bilan global (page de
+// tête de l'export groupé, section 17), qui agrège plusieurs groupes à la fois — un
+// récapitulatif par équipage n'y aurait pas de sens. Dans ce cas, la répartition des modes
+// prend toute la largeur.
+function drawCrewAndModeBox(doc, x, y, width, bilan, concerned) {
   const boxH = 26, pad = 4, colGap = 6;
   doc.setDrawColor(226, 229, 234);
   doc.setFillColor(255, 255, 255);
   doc.roundedRect(x, y, width, boxH, 1.4, 1.4, 'FD');
 
-  const modeColW = width * 0.22;
-  const compColW = (width - modeColW - pad * 2 - colGap * 2) / 2;
-  let cx = x + pad;
-  const cy = y + pad;
-
-  drawComparisonBlock(doc, cx, cy, compColW, 'CO2 — seul·e vs covoituré', bilan.totals.seulCO2, bilan.totals.covoitCO2, fmtKg);
-  cx += compColW + colGap;
-  drawComparisonBlock(doc, cx, cy, compColW, 'Coût — seul·e vs covoituré', bilan.totals.seulCost, bilan.totals.covoitCost, fmtEuro);
-  cx += compColW + colGap;
-  drawModeDistribution(doc, cx, cy, modeColW - pad, bilan.modeCount, bilan.nCarPeople);
+  if (concerned) {
+    const modeColW = width * 0.24;
+    const crewColW = width - modeColW - pad * 2 - colGap;
+    drawCrewRecap(doc, x + pad, y + pad, crewColW, boxH - pad * 2, buildCrewSummaries(concerned));
+    drawModeDistribution(doc, x + pad + crewColW + colGap, y + pad, modeColW - pad, bilan.modeCount, bilan.nCarPeople);
+  } else {
+    drawModeDistribution(doc, x + pad, y + pad, width - pad * 2, bilan.modeCount, bilan.nCarPeople);
+  }
 
   return y + boxH;
 }
 
-// Assemble les trois blocs ci-dessus. `title` à null pour l'omettre (cas du bilan global,
-// dont le bandeau de page dit déjà "Bilan global").
-function drawGroupBilanVisual(doc, x, y, width, bilan, title = 'Bilan de ce groupe') {
+// Assemble les blocs ci-dessus. `title` à null pour l'omettre (cas du bilan global, dont le
+// bandeau de page dit déjà "Bilan global"). `concerned` : voir drawCrewAndModeBox.
+function drawGroupBilanVisual(doc, x, y, width, bilan, title = 'Bilan de ce groupe', concerned = null) {
   let cy = y;
   if (title) {
     doc.setFont(undefined, 'bold');
@@ -2278,7 +2318,7 @@ function drawGroupBilanVisual(doc, x, y, width, bilan, title = 'Bilan de ce grou
     cy += 9;
   }
   cy = drawKpiCards(doc, x, cy, width, bilan) + 5;
-  cy = drawComparisonAndModes(doc, x, cy, width, bilan);
+  cy = drawCrewAndModeBox(doc, x, cy, width, bilan, concerned);
   doc.setTextColor(0, 0, 0);
   return cy;
 }
@@ -2360,7 +2400,7 @@ function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, co
   };
 
   drawPageHeader(doc, `${groupTitle} — bilan et détail`, dateStr, pageW, margin);
-  const bilanBottom = drawGroupBilanVisual(doc, margin, contentTop, pageW - margin * 2, bilan);
+  const bilanBottom = drawGroupBilanVisual(doc, margin, contentTop, pageW - margin * 2, bilan, 'Bilan de ce groupe', concerned);
   const tableTop = bilanBottom + 6;
 
   if (concerned.length <= BILAN_INLINE_THRESHOLD) {
@@ -2392,27 +2432,34 @@ function buildGroupDetailPage(doc, groupTitle, dateStr, pageW, pageH, margin, co
 // Vignette de repère en bas à droite de la carte pleine page (page 1) : zoom fixe sur le
 // bassin du groupe, marqueurs et tracés inclus (voir captureLocatorMap). Rien à dessiner en
 // vue générale (pas un bassin unique) — l'appelant ne doit pas appeler cette fonction dans
-// ce cas.
-async function drawLocatorInset(doc, group, pageW, pageH, margin) {
-  const { basin, dataUrl, width, height } = await captureLocatorMap(group);
-
-  const locW = 62, labelH = 6;
+// ce cas. Capture (async, change la vue) et dessin (synchrone, pur) séparés : la hauteur
+// occupée doit être connue AVANT de mettre en page la carte principale, pour lui réserver la
+// place plutôt que de la recouvrir (voir exportAsPdf/appendGroupPagesToDoc).
+const LOCATOR_WIDTH_MM = 93;   // × 1.5 par rapport à la taille initiale (62mm), demandé par Valentin
+const LOCATOR_LABEL_H_MM = 7;
+const LOCATOR_GAP_MM = 6;      // séparation avec la carte principale au-dessus
+function locatorFootprintHeight(locatorInfo) {
+  return LOCATOR_WIDTH_MM * (locatorInfo.height / locatorInfo.width) + LOCATOR_LABEL_H_MM + LOCATOR_GAP_MM;
+}
+function drawLocatorPanel(doc, locatorInfo, pageW, pageH, margin) {
+  const { basin, dataUrl, width, height } = locatorInfo;
+  const locW = LOCATOR_WIDTH_MM;
   const locH = locW * (height / width);
   const x = pageW - margin - locW;
-  const y = pageH - margin - locH - labelH;
+  const y = pageH - margin - locH - LOCATOR_LABEL_H_MM;
 
   doc.setDrawColor(31, 41, 59);
   doc.setLineWidth(0.6);
-  doc.rect(x - 0.5, y - 0.5, locW + 1, locH + labelH + 1);
+  doc.rect(x - 0.5, y - 0.5, locW + 1, locH + LOCATOR_LABEL_H_MM + 1);
   doc.addImage(dataUrl, 'PNG', x, y, locW, locH);
   doc.setFillColor(31, 41, 59);
-  doc.rect(x, y + locH, locW, labelH, 'F');
-  doc.setFontSize(6.5);
+  doc.rect(x, y + locH, locW, LOCATOR_LABEL_H_MM, 'F');
+  doc.setFontSize(7.5);
   doc.setFont(undefined, 'bold');
   doc.setTextColor(255, 255, 255);
   doc.text(
     basin === 'epinal' ? "Vue d'ensemble — Métropole d'Épinal" : "Vue d'ensemble — Métropole de Nancy",
-    x + locW / 2, y + locH + labelH - 2, { align: 'center' }
+    x + locW / 2, y + locH + LOCATOR_LABEL_H_MM - 2.3, { align: 'center' }
   );
   doc.setFont(undefined, 'normal');
   doc.setTextColor(0, 0, 0);
@@ -2433,6 +2480,11 @@ async function exportAsPdf(label) {
   if (typeof doc.autoTable !== 'function') throw new Error('autoTable indisponible');
 
   await new Promise(r => requestAnimationFrame(r)); // laisse Leaflet finir de peindre le canvas
+  // Capturée avant la carte principale : sa hauteur (connue une fois la capture faite) doit
+  // être réservée dans la mise en page de la carte principale, pas seulement superposée
+  // par-dessus (elle rétrécit d'autant, demandé par Valentin en même temps que
+  // l'agrandissement de la vignette).
+  const locatorInfo = selectedGroup !== null ? await captureLocatorMap(selectedGroup) : null;
   const mapCanvas = await captureMainMapForExport();
   const mapImg = mapCanvas.toDataURL('image/png');
 
@@ -2441,14 +2493,15 @@ async function exportAsPdf(label) {
   const margin = 10;
   const contentTop = 22;
 
-  // PAGE 1 — carte pleine page
+  // PAGE 1 — carte pleine page (réduite si la vignette de repère réserve de la place)
   drawPageHeader(doc, `Covoiturage L1 STAPS — ${exportTitle()}`, new Date().toLocaleString('fr-FR'), pageW, margin);
   const availW = pageW - margin * 2;
-  const availH = pageH - contentTop - margin;
+  const reservedBottomH = locatorInfo ? locatorFootprintHeight(locatorInfo) : 0;
+  const availH = pageH - contentTop - margin - reservedBottomH;
   let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
   if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
   doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
-  if (selectedGroup !== null) await drawLocatorInset(doc, selectedGroup, pageW, pageH, margin);
+  if (locatorInfo) drawLocatorPanel(doc, locatorInfo, pageW, pageH, margin);
 
   // PAGE 2 — bilan visuel du groupe + tableau détaillé
   doc.addPage();
@@ -2633,6 +2686,7 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   });
   await new Promise(r => requestAnimationFrame(r));
 
+  const locatorInfo = await captureLocatorMap(g);
   const mapCanvas = await captureMainMapForExport();
   const mapImg = mapCanvas.toDataURL('image/png');
 
@@ -2643,15 +2697,15 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   const groupTitle = `Covoiturage L1 STAPS — Groupe ${g} — arrivée : ${destinationLabelForGroup(g)}`;
   const dateStr = new Date().toLocaleString('fr-FR');
 
-  // Page carte pleine page
+  // Page carte pleine page (réduite pour réserver la place de la vignette de repère)
   doc.addPage();
   drawPageHeader(doc, groupTitle, dateStr, pageW, margin);
   const availW = pageW - margin * 2;
-  const availH = pageH - contentTop - margin;
+  const availH = pageH - contentTop - margin - locatorFootprintHeight(locatorInfo);
   let mapW = availW, mapH = mapW * (mapCanvas.height / mapCanvas.width);
   if (mapH > availH) { mapH = availH; mapW = mapH * (mapCanvas.width / mapCanvas.height); }
   doc.addImage(mapImg, 'PNG', margin + (availW - mapW) / 2, contentTop, mapW, mapH);
-  await drawLocatorInset(doc, g, pageW, pageH, margin);
+  drawLocatorPanel(doc, locatorInfo, pageW, pageH, margin);
 
   // Page données : bilan visuel + tableau détaillé
   doc.addPage();
@@ -3694,6 +3748,7 @@ const PROJECT_HISTORY = [
   { theme: "Export PDF / PNG", text: "Quatre corrections apportées par Valentin après un premier export réel, sur la refonte de l'entrée précédente. (1) La grande carte de la page 1 (capture directe de la vue à l'écran) laissait souvent une marge large autour du tracé — un cran de zoom en plus (captureMainMapForExport, comme un clic sur \"+\" juste avant la capture, vue à l'écran restaurée juste après) rapproche l'image. (2) La vignette de repère (bassin) masquait jusqu'ici marqueurs et tracés pour n'afficher qu'un fond de carte identique pour tout le bassin (avec mise en cache) — repéré par Valentin comme dénué de sens : sans les tracés, elle ne montre rien d'utile dans une zone dense en routes. Corrigé : captureLocatorMap (remplace getLocatorMapImage) garde marqueurs et tracés visibles, seul le cadrage géographique reste fixe par bassin ; la mise en cache par bassin, incompatible avec un contenu qui change à chaque groupe, est supprimée (plus simple, plus correcte). (3) Bug de police repéré sur la carte \"Véhicules évités\" : le texte apparaissait avec un espace entre chaque lettre et la flèche unicode \"→\" rendue comme des caractères illisibles — les polices intégrées de jsPDF (Helvetica/WinAnsi) ne supportent pas ce caractère, ce qui perturbe le calcul de largeur de splitTextToSize et casse le rendu de toute la ligne. Corrigé en reformulant la phrase sans flèche (déjà repéré ailleurs dans le fichier : le tiret cadratin \"—\" et le point médian \"·\", eux, font partie de l'encodage WinAnsi et s'affichent normalement). (4) Repéré par Valentin : CO2, coût et distance évités affichent TOUJOURS le même pourcentage, quel que soit le groupe — vérifié dans le code, ce n'est pas un hasard mais une conséquence structurelle de TRANSPORT_PROFILES (les trois modes voiture partagent le même g CO2/km et €/km, et ce sont les seuls modes des personnes \"concernées\" par le bilan : CO2 et coût sont donc de simples multiples du kilométrage, avec le même ratio évité que la distance). Les trois cartes séparées sont fusionnées en une seule (\"Impact évité\") : un pourcentage commun affiché une fois, suivi des trois valeurs absolues évitées (CO2, coût, distance) en dessous — la carte \"Véhicules évités\" reste inchangée à côté. Demande complémentaire, un espace entre équipages visiblement absent malgré la proposition initiale : ajouté via une ligne d'espacement fine et sans bordure insérée dans le tableau (buildGroupDetailPage) chaque fois que la clé d'équipage change (buildCrewInfo, qui remplace assignCrewColors et expose aussi ces clés) — les non intégré·es/indépendant·es restent groupé·es ensemble en fin de tableau, sans espace entre eux/elles. Validé par des tests isolés (absence de la flèche unicode dans le texte généré, une seule carte fusionnée au lieu de trois, espacement inséré uniquement entre équipages différents et jamais au sein du groupe hors équipage) et par les 38/38 tests existants de tests_covoiturage.html." },
   { theme: "Export PDF / PNG", text: "Deux nouveaux retours de Valentin après export réel. (1) \"Filtre gris\" systématique sur les cartes exportées : cause identifiée — .leaflet-container a un fond gris par défaut (#ddd), visible par transparence tant qu'une tuile n'est pas complètement chargée ; comme la capture principale (zoom d'un cran, entrée précédente) ET la vignette de repère changent toutes deux la vue juste avant de capturer, une capture prise trop tôt (avant la fin du chargement des nouvelles tuiles) laissait ce gris transparaître un peu partout, lu comme un filtre. L'attente précédente (évènement 'load' de la couche Leaflet active) a été remplacée par une vérification directe du DOM (allMapTilesLoaded : toutes les <img> de .leaflet-tile-pane doivent être complete avec une largeur réelle) — exactement l'état que html2canvas va lire, donc plus fiable que l'évènement de la couche, qui peut se déclencher avant la fin de la peinture. activeTileLayers(), devenue inutile, est supprimée. (2) Zoom de la vignette de repère jugé insuffisant : les bornes géographiques par bassin (BASIN_LOCATOR_BOUNDS) ont été resserrées aux seules communes de l'agglomération (Métropole du Grand Nancy / agglomération spinalienne) plutôt qu'une zone plus large englobant les environs ruraux — non vérifié à l'oeil (pas d'accès navigateur dans cette session), à recontrôler sur un export réel." },
   { theme: "Export PDF / PNG", text: "Zoom de la vignette de repère toujours jugé insuffisant par Valentin malgré le resserrement précédent des bornes géographiques (BASIN_LOCATOR_BOUNDS) : cause probable identifiée — fitBounds() cale son zoom sur la dimension la plus contraignante par rapport à la FORME du conteneur (le div carte est nettement plus large que haut) ; une zone resserrée mais plus haute que large que le conteneur se retrouve donc dézoomée bien au-delà de ce qu'elle devrait montrer, pour que sa hauteur tienne dans un conteneur large — le resserrement des bornes n'y changeait rien tant que leur forme ne correspondait pas à celle du conteneur. Remplacé par un centre + niveau de zoom Leaflet fixes par bassin (BASIN_LOCATOR_VIEW, zoom 13 pour Nancy centré sur DESTINATION_NANCY, zoom 14 pour Épinal centré sur DESTINATION_EPINAL, plus petit), qui ne dépend pas de la forme du conteneur. Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — à recontrôler sur un export réel, les valeurs de zoom pourront être ajustées si encore insatisfaisantes." },
+  { theme: "Export PDF / PNG", text: "Trois demandes de Valentin en une fois. (1) Vignette de repère agrandie ×1,5 (62mm → 93mm, LOCATOR_WIDTH_MM) ; la carte principale de la page 1 réserve désormais cette place au lieu de la superposer par-dessus : captureLocatorMap est appelée AVANT la carte principale pour connaître sa hauteur réelle (locatorFootprintHeight, dépend du ratio largeur/hauteur de la capture), qui réduit d'autant la hauteur disponible pour la grande carte (dans le cas courant où la carte tenait déjà en largeur avec de la marge en dessous, la réduction ne change rien à l'image ; elle ne rétrécit vraiment que si la carte avait besoin de toute la hauteur disponible). drawLocatorInset, qui capturait et dessinait en une seule fonction, est scindée en captureLocatorMap (déjà existante, inchangée) et drawLocatorPanel (dessin pur, sans capture), pour permettre cet ordonnancement. (2) Page 2 : bloc \"comparaison seul·e/covoituré\" (barres CO2 et coût) jugé redondant par Valentin avec la carte \"Impact évité\" juste au-dessus (même pourcentage, déjà expliqué là où c'est calculé) — remplacé, à sa demande, par un mini-récapitulatif par équipage (buildCrewSummaries + drawCrewRecap) : une ligne par conducteur·rice survivant·e avec sa couleur (même formule que buildCrewInfo, cohérent avec la colonne repère du tableau plus bas), son nombre de passager·ères et les chiffres réels de son trajet covoituré (repris de covoitLabel, déjà calculés). La répartition des modes reste à côté, dans une largeur un peu réduite. Sur le bilan global (page de tête de l'export groupé, qui agrège plusieurs groupes), aucun équipage n'a de sens : drawCrewAndModeBox accepte `concerned` optionnel et affiche alors la seule répartition des modes en pleine largeur. (3) Persistance d'un peu de gris sur certaines vues/fonds de carte malgré le correctif précédent : cause probable — une tuile en ÉCHEC de chargement (serveur de tuiles temporairement indisponible ou limité, plus fréquent sur certains fonds Esri sous charge) ne se recharge jamais d'elle-même ; l'ancienne attente considérait ces tuiles comme \"non prêtes\" indéfiniment et épuisait tout le délai d'attente pour rien, sans jamais les récupérer. waitForTilesToLoad distingue maintenant une tuile encore en chargement (unsettledMapTileImgs) d'une tuile en échec définitif (brokenMapTileImgs : complete mais naturalWidth à 0) et relance une fois le chargement des secondes (technique classique : réassigner le même src) avant de céder. Validé par des tests isolés (regroupement en équipages avec comptage des passager·ères et couleurs, cas sans aucun équipage, rendu sans plantage avec/sans équipages y compris en cas de liste trop longue pour la hauteur réservée, cohérence de locatorFootprintHeight avec le ratio de la capture) et par les 38/38 tests existants de tests_covoiturage.html. Le zoom de la vignette et l'absence totale de gris restent non vérifiés à l'oeil (pas d'accès navigateur dans cette session)." },
 ];
 
 // ------------------------------------------------------------------
