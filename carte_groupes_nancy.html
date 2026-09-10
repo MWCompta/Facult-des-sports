@@ -27,7 +27,11 @@
   }
   #map { flex: 1 1 auto; height: 100%; }
   h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; }
-  .subtitle { font-size: 0.8rem; color: var(--ink-soft); margin: 0 0 18px; }
+  /* position:sticky : reste visible en haut de la colonne, quel que soit le défilement ET
+     quel que soit le contenu qui se redessine en dessous (ex. changement de groupe pendant
+     un export groupé, qui redessine #member-list avec une taille différente à chaque étape
+     et peut donc décaler tout ce qui suit sans qu'on ait soi-même fait défiler la vue). */
+  .subtitle { position: sticky; top: 0; z-index: 2; background: var(--panel-bg); padding: 2px 0 6px; font-size: 0.8rem; color: var(--ink-soft); margin: 0 0 12px; }
   .weather-toggle {
     display: flex; align-items: flex-start; gap: 6px; font-size: 0.74rem; color: var(--ink-soft);
     line-height: 1.4; margin: 0 0 14px; padding: 8px 10px; border: 1px solid var(--line);
@@ -2722,7 +2726,10 @@ async function exportAsPng(label) {
 // 17. EXPORT GROUPÉ — BILAN GLOBAL ET TOUS LES GROUPES
 // Déclenché par "Exporter tous les groupes tracés" : trace automatiquement chaque groupe
 // (comme un clic sur "Tracer l'itinéraire" le ferait pour chacun), puis construit un seul
-// PDF avec une page de bilan global suivie des pages de chaque groupe.
+// PDF avec, pour chaque groupe, exactement les deux pages que produirait l'export individuel
+// (exportAsPdf) — appendGroupPagesToDoc appelle les mêmes fonctions de mise en page — suivies
+// d'une "vue générale" en 2 pages elle aussi (carte de toutes les routes tracées + bilan
+// englobant tous les groupes), demandée par Valentin pour clore le document.
 // ------------------------------------------------------------------
 // Bilan global — agrège tous les groupes déjà tracés (mémorisés dans savedTraceData).
 function computeGlobalSummary() {
@@ -2812,8 +2819,12 @@ function drawGlobalSummaryPage(doc, s) {
 // Bascule temporairement l'affichage sur le groupe g (état déjà sauvegardé dans
 // savedTraceData par un traceRoutes() antérieur), capture la carte, et ajoute au document
 // PDF ses deux pages (carte pleine page, puis détail + bilan) — utilisé par
-// exportAllGroups pour chaque groupe du document groupé.
-async function appendGroupPagesToDoc(doc, g, saved) {
+// exportAllGroups pour chaque groupe du document groupé, avec exactement la même mise en
+// page que l'export d'un seul groupe (exportAsPdf), pour que le résultat soit identique.
+// isFirstPage : le tout premier groupe du document réutilise la page 1 déjà créée par le
+// constructeur jsPDF (déjà en portrait) au lieu d'en ajouter une, pour ne pas laisser de
+// page blanche en tête de document.
+async function appendGroupPagesToDoc(doc, g, saved, isFirstPage) {
   const concerned = filterConcerned(saved.perPerson);
 
   selectedGroup = g;
@@ -2840,7 +2851,7 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   const dateStr = new Date().toLocaleString('fr-FR');
 
   // Page carte principale + vignette de repère (portrait), mises en page pour combler l'espace
-  doc.addPage('a4', 'portrait');
+  if (!isFirstPage) doc.addPage('a4', 'portrait');
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   drawPageHeader(doc, groupTitle, dateStr, pageW, margin);
@@ -2861,6 +2872,68 @@ async function appendGroupPagesToDoc(doc, g, saved) {
   }
 }
 
+// Bascule sur la vue générale (tous groupes, tous bassins) et superpose les tracés DÉJÀ
+// calculés de chaque groupe (savedTraceData ne contient que des géométries déjà obtenues,
+// aucun nouvel appel réseau) — pour la carte de la page de clôture de l'export groupé.
+// Restaure l'affichage précédent une fois la capture faite.
+async function captureGlobalOverviewMap(groups) {
+  const originalSelectedGroup = selectedGroup, originalViewFilter = viewFilter;
+  const originalRouteResult = routeResult, originalUnassigned = unassignedIds;
+  const originalCenter = map.getCenter(), originalZoom = map.getZoom();
+  try {
+    selectedGroup = null;
+    viewFilter = 'all';
+    routeLayerGroup.clearLayers();
+    groups.forEach(g => {
+      savedTraceData.get(g).driverGeometries.forEach(dg => {
+        L.geoJSON(dg.geometry, { style: { color: dg.color, weight: 3, opacity: 0.75, dashArray: dg.usedFallback ? '7,7' : null } }).addTo(routeLayerGroup);
+      });
+    });
+    renderMarkers();
+
+    // Le passage en vue générale ne recadre pas la carte de lui-même (selectGroup(null) ne
+    // fait que changer les marqueurs affichés) — sans ce fitBounds, la capture reprendrait le
+    // zoom du dernier groupe affiché au lieu de montrer l'ensemble.
+    const points = overviewData();
+    if (points.length) {
+      map.fitBounds(L.latLngBounds(points.map(d => [d.lat, d.lon])), { padding: [30, 30], animate: false });
+    }
+    return await captureMainMap();
+  } finally {
+    routeLayerGroup.clearLayers();
+    selectedGroup = originalSelectedGroup;
+    viewFilter = originalViewFilter;
+    routeResult = originalRouteResult;
+    unassignedIds = originalUnassigned;
+    map.setView(originalCenter, originalZoom, { animate: false });
+  }
+}
+
+// Pages de clôture de l'export groupé : une "vue générale" avec exactement la même mise en
+// page que la page 1 d'un export individuel (layoutAndDrawPage1Maps — carte pleine page, pas
+// de vignette de repère ici, un seul bassin n'aurait pas de sens pour une vue qui les mélange
+// tous), puis le bilan englobant tous les groupes (déjà calculé par computeGlobalSummary,
+// affiché avec le même bilan visuel que chaque groupe — drawGlobalSummaryPage). Demandé par
+// Valentin pour clore le document sur les totaux d'ensemble, avec le même soin visuel que le
+// reste du document plutôt qu'une simple page de texte.
+async function appendGlobalOverviewPages(doc, groups, summary) {
+  const margin = 10, contentTop = 22;
+  const dateStr = new Date().toLocaleString('fr-FR');
+  const title = `Covoiturage L1 STAPS — Vue générale (${groups.length} groupe(s) tracé(s))`;
+
+  const mapCanvas = await captureGlobalOverviewMap(groups);
+  const mapImg = mapCanvas.toDataURL('image/png');
+
+  doc.addPage('a4', 'portrait');
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  drawPageHeader(doc, title, dateStr, pageW, margin);
+  layoutAndDrawPage1Maps(doc, mapCanvas, mapImg, null, pageW, pageH, margin, contentTop);
+
+  doc.addPage('a4', 'landscape');
+  drawGlobalSummaryPage(doc, summary);
+}
+
 async function exportAllGroups() {
   if (groupList.length === 0) {
     alert("Aucune donnée chargée.");
@@ -2871,7 +2944,9 @@ async function exportAllGroups() {
     alert("Export groupé indisponible (bibliothèque PDF non chargée). Exportez chaque groupe individuellement avec le bouton \"Exporter (PDF)\" à la place.");
     return;
   }
-  const doc = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  // Portrait : la page 1 du document doit être la page carte du premier groupe (même mise en
+  // page que l'export individuel, voir appendGroupPagesToDoc), pas une page de bilan.
+  const doc = new jsPDFCtor({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   if (typeof doc.autoTable !== 'function') {
     alert("Export groupé indisponible (bibliothèque de tableaux non chargée). Exportez chaque groupe individuellement à la place.");
     return;
@@ -2885,6 +2960,12 @@ async function exportAllGroups() {
 
   const btn = document.getElementById('export-all-btn');
   const original = btn.textContent;
+  // #subtitle est sticky (reste visible en haut de la colonne quel que soit le défilement) —
+  // mais le CONTENU de la colonne change aussi de taille à chaque groupe affiché
+  // (selectGroup ci-dessous redessine #member-list), ce qui peut décaler le bouton lui-même
+  // hors du champ de vision sans qu'on ait fait défiler la vue soi-même. setSidebarStatus y
+  // écrit le même message que le bouton, pour qu'il reste visible dans tous les cas.
+  const originalSidebarStatus = document.getElementById('subtitle').textContent;
   btn.disabled = true;
 
   const originalGroup = selectedGroup, originalRouteResult = routeResult,
@@ -2895,7 +2976,9 @@ async function exportAllGroups() {
     // savedTraceData, comme un clic manuel sur "Tracer l'itinéraire" le ferait).
     for (let gi = 0; gi < groupList.length; gi++) {
       const g = groupList[gi];
-      btn.textContent = `Traçage ${gi + 1}/${groupList.length}…`;
+      const label = `Traçage ${gi + 1}/${groupList.length}…`;
+      btn.textContent = label;
+      setSidebarStatus(label);
       selectGroup(g);
       await traceRoutes();
     }
@@ -2911,14 +2994,17 @@ async function exportAllGroups() {
     return String(a).localeCompare(String(b));
   });
 
-    // ÉTAPE 2 — construit le PDF à partir des groupes tracés à l'étape précédente
-    drawGlobalSummaryPage(doc, computeGlobalSummary());
-
+    // ÉTAPE 2 — construit le PDF : les deux pages de chaque groupe (même mise en page que
+    // l'export individuel), puis une vue générale + un bilan englobant tous les groupes.
     for (let gi = 0; gi < groups.length; gi++) {
       const g = groups[gi];
-      btn.textContent = `Export ${gi + 1}/${groups.length}…`;
-      await appendGroupPagesToDoc(doc, g, savedTraceData.get(g));
+      const label = `Export ${gi + 1}/${groups.length}…`;
+      btn.textContent = label;
+      setSidebarStatus(label);
+      await appendGroupPagesToDoc(doc, g, savedTraceData.get(g), gi === 0);
     }
+    setSidebarStatus('Bilan global…');
+    await appendGlobalOverviewPages(doc, groups, computeGlobalSummary());
     doc.save('covoiturage-tous-groupes.pdf');
   } catch (err) {
     alert("L'export groupé a été interrompu par une erreur. Les groupes déjà traités n'ont pas été sauvegardés — réessayez.");
@@ -2936,6 +3022,7 @@ async function exportAllGroups() {
     }
     renderMarkers();
     renderMemberList();
+    setSidebarStatus(originalSidebarStatus);
     btn.disabled = false;
     btn.textContent = original;
   }
@@ -3288,12 +3375,20 @@ document.getElementById('csv-input').addEventListener('change', async function (
 // extraite de handleCsvImport ci-dessous pour la rendre lisible indépendamment du reste
 // de l'import. nSanitized : nombre de champs qui contenaient < ou > (retirés), pour
 // l'avertissement affiché à l'utilisateur.
-// Affiche le message d'avancement de l'import à deux endroits à la fois : #subtitle (en
-// haut de la colonne, hors champ de vision une fois la colonne verrouillée pendant
-// l'import — voir withBusyLock, section 13 — puisqu'elle devient alors impossible à faire
-// défiler) et #import-status (juste sous le bouton "Parcourir", toujours visible).
-function setImportStatus(text) {
+// Message d'avancement toujours visible en haut de la colonne (#subtitle, position:sticky —
+// reste affiché quel que soit le défilement ET quel que soit le contenu qui se redessine en
+// dessous) — utilisé par toute action longue qui redessine la colonne pendant son exécution
+// (l'import, mais aussi l'export groupé qui change de groupe affiché à chaque étape), où le
+// message porté par le bouton lui-même peut sinon se retrouver hors champ sans qu'on ait
+// soi-même fait défiler la vue.
+function setSidebarStatus(text) {
   document.getElementById('subtitle').textContent = text;
+}
+// Affiche le message d'avancement de l'import à deux endroits à la fois : #subtitle (via
+// setSidebarStatus ci-dessus) et #import-status (juste sous le bouton "Parcourir",
+// contextuel à l'import).
+function setImportStatus(text) {
+  setSidebarStatus(text);
   document.getElementById('import-status').textContent = text;
 }
 
@@ -3896,6 +3991,7 @@ const PROJECT_HISTORY = [
   { theme: "Algorithme de covoiturage", text: "Nouvelle étape de l'algorithme demandée par Valentin : \"rendez-vous chez le/la conducteur·rice\". Constat de départ : le conducteur va systématiquement chercher chaque passager·ère à son domicile, même quand plusieurs personnes cochées habitent à quelques minutes les unes des autres — un détour évitable si ces personnes peuvent se retrouver elles-mêmes. Précision demandée par Valentin sur la portée : UNIQUEMENT les personnes concernées par le trajet déjà généré (pas tout le groupe avant calcul) — implémenté comme une 4e étape (applyMeetupRendezvous, section 12), appliquée UNE FOIS sur le meilleur résultat retenu après les essais randomisés existants (RESTARTS), jamais à l'intérieur de bestInsertion/runSavingsConsolidation/insertPickupCandidates/localSearchImprove qui restent inchangées. Pour chaque passager·ère déjà assigné·e à un trajet, si elle/il peut rejoindre le domicile de son conducteur·rice en 10 minutes maximum (MEETUP_MAX_SECONDS) — à pied (une matrice piétonne dédiée, calculée une seule fois pour les seules personnes concernées par CE trajet) ou avec son propre véhicule si elle/il en a un (hasCarCapability, en réutilisant directement la grande matrice routière déjà calculée pour tout le monde — aucun appel réseau supplémentaire pour cette option) — elle/il est retiré·e du trajet comme point de passage : son conducteur·rice n'a alors plus aucun détour à faire pour cette personne. Le mode le plus rapide des deux est retenu et affiché (\"Rendez-vous chez X, Y min à pied/en voiture\" remplace \"Absorbé dans le trajet de X\"), en gardant le même rôle \"Passager·ère (avec X)\" pour rester dans le même équipage (couleur sur la carte, regroupement dans le tableau PDF — aucun changement nécessaire de ce côté). Une personne trop loin (>10 min dans les deux modes) reste ramassée normalement, sans changement. Un rendez-vous fait en voiture ajoute son vrai petit trajet (km/temps/CO2/coût) aux totaux covoiturés du bilan ; un rendez-vous à pied n'y ajoute rien (ces totaux sont pensés comme des totaux de kilométrage VÉHICULE — vérifié que cela ne casse pas l'invariant selon lequel CO2/coût/distance évités affichent le même pourcentage, entrée du 9 sept : un rendez-vous à pied ne touche à aucun des trois, un rendez-vous en voiture les affecte tous les trois de façon proportionnelle comme n'importe quel autre trajet en voiture). Le compteur de places par conducteur·rice (affiché à l'écran) inclut désormais aussi les personnes en rendez-vous, pour ne pas sous-compter qui est réellement transporté ; le message de statut précise combien de personnes sont concernées par un rendez-vous quand c'est le cas. Validé par 4 tests isolés ajoutés à tests_covoiturage.html (deux personnes motorisées à moins de 10 min rejoignent en voiture, une personne sans voiture ne rejoint jamais qu'à pied, une personne à plus de 10 minutes dans les deux modes reste ramassée normalement, repli propre si le service de routage piéton est indisponible) — 42/42 tests passent — et par des scénarios isolés supplémentaires sur buildTraceSummary (libellés par personne, totaux covoiturés qui n'ajoutent rien pour un rendez-vous à pied) avant intégration. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
   { theme: "Algorithme de covoiturage", text: "Ajustement demandé par Valentin sur le rendez-vous chez le/la conducteur·rice (entrée précédente) : en mode mauvais temps, seule l'option voiture doit rester possible — personne ne doit marcher jusqu'au domicile de son conducteur·rice sous la pluie. applyMeetupRendezvous reçoit un nouveau paramètre allowWalking (= !badWeatherMode côté traceRoutes) : à false, l'option à pied n'est même plus évaluée, restent alors ramassées normalement à leur domicile les seules personnes qui n'ont pas de véhicule propre (hasCarCapability) — celles qui en ont un continuent de rejoindre leur conducteur·rice en voiture, mode mauvais temps ou pas. Optimisation au passage : en mode mauvais temps, la matrice piétonne dédiée au rendez-vous n'est même plus demandée à OSRM (son résultat ne serait de toute façon pas utilisé), un appel réseau économisé à chaque traçage sous ce mode. Validé par un test isolé ajouté à tests_covoiturage.html (une personne motorisée rejoint toujours en voiture par mauvais temps, une personne sans véhicule reste ramassée normalement au lieu de marcher) — 43/43 tests passent — et par une vérification directe sur carte_groupes_nancy.html lui-même (pas seulement sa copie de test) avant intégration. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
   { theme: "Export PDF / PNG", text: "Demande de Valentin : dans l'encadré \"Équipages\" de la page 2 (drawCrewAndModeBox, section 14), la liste tronquait les équipages au-delà de ce qui tenait dans sa hauteur fixe (26mm), avec une note \"+ N équipage(s) — voir le tableau ci-dessous\" pour les autres — il veut voir TOUS les équipages directement dans l'encadré. La hauteur est désormais calculée à partir du nombre d'équipages (CREW_ROW_H par ligne) AVANT de dessiner le cadre, et ne descend jamais sous 26mm (la taille historique, qui reste inchangée tant que le nombre d'équipages ne l'exige pas) : drawCrewRecap n'a donc plus jamais besoin de tronquer, la note de troncature disparaît. La hauteur retournée par drawCrewAndModeBox (et donc par drawGroupBilanVisual) était déjà utilisée par buildGroupDetailPage pour savoir où commencer le tableau détaillé en dessous (tableTop) — un encadré plus grand laisse donc mécaniquement moins de place au tableau, qui compacte sa police en conséquence (chooseLayoutLevel, déjà en place, aucun changement nécessaire de ce côté). Validé par un test isolé : avec peu d'équipages la hauteur reste 26mm (comportement inchangé), avec beaucoup d'équipages elle grandit et tous sont bien dessinés (aucun Driver manquant, aucune note de troncature) — plus les 43/43 tests existants de tests_covoiturage.html, non affectés (ce chantier ne touche qu'à l'export PDF). Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier le cas extrême d'un très grand nombre d'équipages, où le tableau détaillé pourrait devoir déborder sur une page suivante (mécanisme de pagination de jspdf-autotable déjà existant, pas modifié ici)." },
+  { theme: "Export PDF / PNG", text: "Deux demandes de Valentin sur l'export groupé (\"Exporter tous les groupes tracés\"). (1) Il voulait retrouver, pour chaque groupe du document groupé, exactement le même design que l'export individuel (\"Exporter (PDF)\") — déjà largement le cas (appendGroupPagesToDoc appelle les mêmes fonctions que exportAsPdf), mais la toute première page du document groupé était une simple page de bilan textuel-ish (drawGlobalSummaryPage), différente du reste. Restructuré : le document commence directement par la page carte du premier groupe (le constructeur jsPDF crée sa page 1 en portrait, réutilisée telle quelle par appendGroupPagesToDoc via un nouveau paramètre isFirstPage — pas de page blanche ajoutée), suivi des 2 pages de chaque groupe restant, et le bilan global (déjà existant, quasiment inchangé) est déplacé en TOUT DERNIER, comme demandé, avec en plus une carte qui lui était propre demandée par Valentin (\"pense à rajouter des totaux... avec un peu de design\") : une nouvelle page \"Vue générale\" (carte de TOUS les groupes tracés avec leurs tracés réels superposés, recadrée sur leur emprise complète — captureGlobalOverviewMap, réutilise les géométries déjà calculées dans savedTraceData, aucun nouvel appel réseau) suivie du bilan global existant (drawGlobalSummaryPage) — les deux mises en page exactement comme pour un groupe (portrait carte, puis paysage bilan, via layoutAndDrawPage1Maps et drawGlobalSummaryPage), pour que cette clôture ait le même soin visuel que le reste du document plutôt que de trancher avec lui. (2) Repéré par Valentin (déjà vécu avec l'import, entrée du 9 sept) : pendant l'export groupé, la colonne de gauche verrouillée ne peut plus défiler, et en plus son CONTENU change de taille à chaque groupe affiché (le passage d'un groupe à l'autre redessine #member-list avec un nombre de personnes différent), ce qui peut décaler le bouton \"Exporter tous les groupes tracés\" (qui porte le compteur \"Traçage X/Y\"/\"Export X/Y\") hors du champ de vision sans qu'on ait soi-même fait défiler la vue — un cran plus sournois que le cas de l'import, où seul le VERROU empêchait de défiler. Corrigé de façon plus générale cette fois : #subtitle (en haut de la colonne) passe en position:sticky (reste épinglé en haut de la zone visible quel que soit le défilement ET quel que soit ce qui se redessine en dessous), et une nouvelle fonction setSidebarStatus() y écrit le même message que le bouton à chaque étape ; setImportStatus() est réécrite pour s'appuyer dessus (elle continue en plus d'écrire dans #import-status, qui reste utile juste sous \"Parcourir\"). Validé par un test de structure isolé (séquence de pages exacte sur un cas à 3 groupes : 8 pages, orientations alternées portrait/paysage, aucune page blanche en tête) et par les 43/43 tests existants de tests_covoiturage.html, non affectés (ce chantier ne touche qu'à l'export PDF et à l'interface). Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier le rendu réel de la vue générale avec tracés superposés, et le comportement visuel du sticky pendant un export réel." },
 ];
 
 // ------------------------------------------------------------------
