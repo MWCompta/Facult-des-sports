@@ -1371,7 +1371,11 @@ function esc(s) {
 // MAX_DETOUR_SECONDS et la capacité du conducteur non dépassée ; (3) localSearchImprove —
 // amélioration locale, relocalise un passager si cela réduit la distance totale.
 // traceRoutes() orchestre ces trois étapes, plusieurs essais randomisés (RESTARTS) sont
-// comparés, le meilleur est conservé.
+// comparés, le meilleur est conservé. Une quatrième étape, appliquée une fois le meilleur
+// essai retenu (pas à chaque essai randomisé) : (4) applyMeetupRendezvous — pour les
+// personnes concernées par CE trajet uniquement, retire du trajet du conducteur celles qui
+// peuvent rejoindre son domicile par leurs propres moyens (à pied ou en voiture, 10 min max),
+// le déchargeant d'autant de détours.
 // ------------------------------------------------------------------
 // ------------------------------------------------------------------
 // Sous-fonctions pures de l'algorithme de covoiturage (utilisées par traceRoutes juste en
@@ -1522,10 +1526,68 @@ function localSearchImprove(routes, routeLoads, capacities, T, D, maxDetourSecon
   }
 }
 
+// Distance/durée maximale pour qu'une personne rejoigne elle-même le domicile de son
+// conducteur·rice (à pied, ou avec son propre véhicule si elle en a un) plutôt que d'être
+// ramassée par un détour du trajet — symétrique, côté passager·ère, du détour maximum déjà
+// imposé au conducteur (MAX_DETOUR_SECONDS).
+const MEETUP_MAX_SECONDS = 10 * 60;
+
+// ÉTAPE 4 de traceRoutes — rendez-vous chez le/la conducteur·rice : simplifie les trajets
+// déjà calculés (routes, résultat définitif après RESTARTS + localSearchImprove) en retirant
+// comme point de passage tout passager·ère du trajet généré qui peut rejoindre le domicile de
+// son conducteur·rice en MEETUP_MAX_SECONDS maximum — à pied (footT/footD, une matrice
+// piétonne dédiée aux seules personnes concernées par CE trajet), ou avec son propre véhicule
+// si elle/il en a un (hasCarCapability), en réutilisant directement le temps en voiture déjà
+// connu (T/D, la grande matrice routière déjà calculée pour tout le monde — aucun appel
+// réseau supplémentaire pour cette option). Le mode le plus rapide des deux est retenu.
+// Mute `routes` en place (retire l'indice concerné : son conducteur·rice n'a alors plus AUCUN
+// détour à faire pour cette personne) et renvoie une Map personne -> détail du rendez-vous
+// (chez qui, par quel mode, en combien de temps/km), utilisée par buildTraceSummary pour
+// l'affichage et pour compter la contribution réelle d'un trajet fait en voiture.
+// footT/footD/footIndexOf peuvent être null (service de routage piéton indisponible) : dans
+// ce cas seule l'option voiture reste évaluée, jamais de plantage.
+function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT, footD, footIndexOf) {
+  const meetupInfo = new Map();
+  for (let di = 0; di < routes.length; di++) {
+    const driver = survivingDrivers[di];
+    const driverRoadIdx = routes[di][0];
+    let pi = 1;
+    while (pi < routes[di].length - 1) {
+      const passengerRoadIdx = routes[di][pi];
+      const passenger = roadPoints[passengerRoadIdx];
+
+      let walkSeconds = Infinity, walkKm = 0;
+      if (footT && footIndexOf.has(passenger) && footIndexOf.has(driver)) {
+        const pIdx = footIndexOf.get(passenger), dIdx = footIndexOf.get(driver);
+        walkSeconds = footT[pIdx][dIdx];
+        walkKm = footD[pIdx][dIdx] / 1000;
+      }
+      let driveSeconds = Infinity, driveKm = 0;
+      if (hasCarCapability(passenger)) {
+        driveSeconds = T[passengerRoadIdx][driverRoadIdx];
+        driveKm = D[passengerRoadIdx][driverRoadIdx] / 1000;
+      }
+
+      if (Math.min(walkSeconds, driveSeconds) <= MEETUP_MAX_SECONDS) {
+        const mode = driveSeconds <= walkSeconds ? 'voiture' : 'à pied';
+        routes[di].splice(pi, 1);
+        meetupInfo.set(passenger, {
+          driver, mode,
+          seconds: mode === 'voiture' ? driveSeconds : walkSeconds,
+          km: mode === 'voiture' ? driveKm : walkKm
+        });
+      } else {
+        pi++;
+      }
+    }
+  }
+  return meetupInfo;
+}
+
 // Calcule les totaux resserrés (personnes concernées par CET itinéraire) et le détail par
 // personne, pour l'affichage et l'export — pure fonction du résultat déjà calculé par
 // traceRoutes (aucun appel réseau ni accès au DOM).
-function buildTraceSummary({ drivers, survivingDrivers, pickupCandidates, independentMembers, unassignedIds, routes, roadPoints, driverInfos, metricsCtx }) {
+function buildTraceSummary({ drivers, survivingDrivers, pickupCandidates, independentMembers, unassignedIds, routes, roadPoints, driverInfos, metricsCtx, meetupInfo }) {
   // Totaux resserrés : seulement les personnes concernées par CET itinéraire (voitures
   // cochées + candidat·es au ramassage, intégré·es ou non), pas les indépendant·es qui
   // n'en font pas partie. Utilisés à la fois pour l'écran et pour le PDF.
@@ -1543,6 +1605,15 @@ function buildTraceSummary({ drivers, survivingDrivers, pickupCandidates, indepe
   pickupCandidates.filter(c => unassignedIds.has(c.id)).forEach(m => {
     const s = computeSoloMetrics(m, metricsCtx);
     concernedCovoitKm += s.km; concernedCovoitSeconds += s.seconds; concernedCovoitCO2 += s.co2; concernedCovoitCost += s.cost;
+  });
+  // Contribution réelle d'un rendez-vous fait en voiture (un vrai petit trajet, avec son
+  // propre CO2/coût) ; rien à ajouter pour un rendez-vous à pied — ces totaux sont pensés
+  // comme des totaux de kilométrage VÉHICULE, dont la marche ne fait pas partie.
+  meetupInfo.forEach(info => {
+    if (info.mode === 'voiture') {
+      concernedCovoitKm += info.km; concernedCovoitSeconds += info.seconds;
+      concernedCovoitCO2 += info.km * EMISSION_G_PER_KM / 1000; concernedCovoitCost += info.km * COST_PER_KM;
+    }
   });
   const concernedTotals = {
     seulKm: concernedSeulKm, seulSeconds: concernedSeulSeconds, seulCO2: concernedSeulCO2, seulCost: concernedSeulCost,
@@ -1570,6 +1641,21 @@ function buildTraceSummary({ drivers, survivingDrivers, pickupCandidates, indepe
         role: `Passager·ère (avec ${d.nom})`,
         seulKm: sc.km, seulSeconds: sc.seconds, seulCO2: sc.co2, seulCost: sc.cost,
         covoitLabel: `Absorbé dans le trajet de ${d.nom}`
+      });
+    });
+    // Personnes ayant rejoint ce/cette conducteur·rice par leurs propres moyens (retirées de
+    // routes[di] par applyMeetupRendezvous) : listées juste après les passager·ères
+    // ramassé·es normalement, avec le même rôle "Passager·ère (avec X)" pour rester dans le
+    // même équipage (couleur, regroupement PDF...) bien qu'elles ne soient plus un point de
+    // passage du trajet.
+    meetupInfo.forEach((info, person) => {
+      if (info.driver !== d) return;
+      const sc = computeSoloMetrics(person, metricsCtx);
+      perPerson.push({
+        nom: person.nom, mode: activeTransportMode(person) || '—',
+        role: `Passager·ère (avec ${d.nom})`,
+        seulKm: sc.km, seulSeconds: sc.seconds, seulCO2: sc.co2, seulCost: sc.cost,
+        covoitLabel: `Rendez-vous chez ${d.nom} (${fmtMin(info.seconds)} ${info.mode === 'voiture' ? 'en voiture' : 'à pied'})`
       });
     });
   });
@@ -1760,6 +1846,32 @@ async function traceRoutes() {
 
     document.getElementById('route-status').textContent = 'Calcul des itinéraires routiers…';
 
+    // Rendez-vous chez le/la conducteur·rice (étape 4, voir section 12) : une seule matrice
+    // piétonne, pour les seules personnes concernées par CE trajet (conducteur·rices
+    // survivant·es + leurs passager·ères déjà assigné·es) — pas tout le groupe. Les temps en
+    // voiture, eux, sont déjà connus (T/D ci-dessus) : aucun appel réseau supplémentaire pour
+    // cette option.
+    const meetupPoints = [];
+    const meetupFootIndexOf = new Map();
+    routes.forEach(route => {
+      route.forEach(idx => {
+        const p = roadPoints[idx];
+        if (p !== dest && !meetupFootIndexOf.has(p)) {
+          meetupFootIndexOf.set(p, meetupPoints.length);
+          meetupPoints.push(p);
+        }
+      });
+    });
+    let meetupFootT = null, meetupFootD = null;
+    if (meetupPoints.length > 1) {
+      try {
+        const t = await fetchDurationMatrix(meetupPoints, 'foot');
+        meetupFootT = t.durations; meetupFootD = t.distances;
+        await sleep(1100);
+      } catch (err) { /* repli : l'option "à pied" n'est simplement pas proposée, l'option voiture (T/D, déjà disponible) reste possible */ }
+    }
+    const meetupInfo = applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, meetupFootT, meetupFootD, meetupFootIndexOf);
+
     const palette = DRIVER_ROUTE_PALETTE;
     const colorByDriver = new Map();
     const colorByPassenger = new Map();
@@ -1775,6 +1887,10 @@ async function traceRoutes() {
       const stopPoints = routes[di].map(idx => roadPoints[idx]);
       const passengerStops = stopPoints.slice(1, -1);
       passengerStops.forEach(p => colorByPassenger.set(p.id, color));
+      // Les personnes en rendez-vous chez ce/cette conducteur·rice ne sont plus un point de
+      // passage du trajet, mais gardent la couleur de son équipage sur la carte.
+      const meetupForThisDriver = [...meetupInfo.entries()].filter(([, info]) => info.driver === d);
+      meetupForThisDriver.forEach(([person]) => colorByPassenger.set(person.id, color));
 
       let geometry, carpoolSeconds, carpoolKm, usedFallback = false;
       try {
@@ -1797,7 +1913,8 @@ async function traceRoutes() {
       driverGeometries.push({ geometry, color, usedFallback });
 
       driverInfos.push({
-        nom: d.nom, color, capacity: survivingCapacities[di], nPassengers: passengerStops.length,
+        nom: d.nom, color, capacity: survivingCapacities[di],
+        nPassengers: passengerStops.length + meetupForThisDriver.length,
         carpoolSeconds, carpoolKm,
         carpoolCO2: carpoolKm * EMISSION_G_PER_KM / 1000,
         carpoolCost: carpoolKm * COST_PER_KM
@@ -1807,7 +1924,7 @@ async function traceRoutes() {
     }
 
     const { concerned, concernedTotals, perPerson } = buildTraceSummary({
-      drivers, survivingDrivers, pickupCandidates, independentMembers, unassignedIds, routes, roadPoints, driverInfos, metricsCtx
+      drivers, survivingDrivers, pickupCandidates, independentMembers, unassignedIds, routes, roadPoints, driverInfos, metricsCtx, meetupInfo
     });
 
     routeResult = { colorByDriver, colorByPassenger };
@@ -1835,7 +1952,7 @@ async function traceRoutes() {
       seulCO2: concernedTotals.seulCO2, seulCost: concernedTotals.seulCost,
       covoitKm: concernedTotals.covoitKm, covoitSeconds: concernedTotals.covoitSeconds,
       covoitCO2: concernedTotals.covoitCO2, covoitCost: concernedTotals.covoitCost,
-      nPeople: concerned.length, nIndependent: independentMembers.length
+      nPeople: concerned.length, nIndependent: independentMembers.length, nMeetup: meetupInfo.size
     }, usedMatrixFallback || anyRouteFallback, unassignedNames);
   } catch (err) {
     document.getElementById('route-status').textContent = "Erreur lors du calcul (service de trajets indisponible). Réessayez dans quelques instants.";
@@ -1847,7 +1964,9 @@ async function traceRoutes() {
 
 function renderResults(driverInfos, totals, usedFallback, unassignedNames) {
   const nPassengersTotal = driverInfos.reduce((s, r) => s + r.nPassengers, 0);
-  let statusMsg = `${driverInfos.length} trajet(s) · ${nPassengersTotal} passager(s) amené(s) à destination · ${totals.nIndependent} en mode indépendant (bus/moto/vélo/à pied).`;
+  let statusMsg = `${driverInfos.length} trajet(s) · ${nPassengersTotal} passager(s) amené(s) à destination` +
+    (totals.nMeetup > 0 ? ` (dont ${totals.nMeetup} en rendez-vous chez leur conducteur·rice)` : '') +
+    ` · ${totals.nIndependent} en mode indépendant (bus/moto/vélo/à pied).`;
   if (unassignedIds.size > 0) {
     statusMsg += ` Il manque ${unassignedIds.size} place(s) : ${unassignedNames.join(', ')} non covoituré(e)(s) (détour > 15 min ou capacité atteinte).`;
   }
@@ -3763,6 +3882,7 @@ const PROJECT_HISTORY = [
   { theme: "Export PDF / PNG", text: "Trois retours de Valentin après un nouvel export réel. (1) Signalé comme un problème de précision important : la grande carte de la page 1 ne correspondait plus exactement à ce qui est affiché à l'écran — cause : le cran de zoom ajouté automatiquement avant la capture (captureMainMapForExport, entrée du 9 sept), en gardant le même centre, pouvait recadrer hors champ une partie du tracé visible à l'écran avant le zoom. Fonction retirée : la carte principale (exportAsPdf ET appendGroupPagesToDoc) capture à nouveau directement la vue courante, sans aucune modification — l'export doit toujours montrer exactement ce que Valentin regarde, jamais une vue recadrée à son insu, quitte à perdre le rapprochement visuel obtenu par le cran de zoom. (2) Icône de sélection du fond de carte (en haut à droite, à côté du zoom) masquée pendant la capture, comme le contrôle de zoom l'était déjà — L.control.layers() est maintenant gardé dans une variable (layersControl) pour pouvoir le cibler ; appliqué à captureMapCanvas() (donc aux deux cartes de l'export PDF, grande carte et vignette, qui partagent cette fonction) et ajouté à la liste de captureControlsToHide() pour le secours PNG. (3) Testé à la demande de Valentin (\"on essaie ?\") : la page 1 (carte + vignette, empilées verticalement) passe en format portrait plutôt que paysage — gain réel de place pour les deux cartes empilées verticalement (plus de hauteur disponible au format portrait, quand elles étaient auparavant contraintes par la hauteur, pas la largeur, en paysage). La page 2 (tableau large + cartes chiffrées) reste en paysage, plus adaptée à son contenu : jsPDF permet de mélanger les orientations dans un même document via doc.addPage(format, orientation) sur chaque nouvelle page. Dans l'export groupé (exportAllGroups), seule la page de bilan global (déjà un tableau, reste paysage comme avant) et les pages de données par groupe (paysage) sont concernées différemment des pages de carte par groupe (portrait) ; pageW/pageH sont maintenant recalculés après chaque doc.addPage() plutôt que réutilisés d'une page à l'autre, les deux orientations n'ayant pas les mêmes dimensions. Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — à recontrôler sur un export réel, en particulier si le format portrait convient visuellement ou s'il faut revenir en arrière." },
   { theme: "Export PDF / PNG", text: "Trois nouveaux retours de Valentin, une fois le format portrait en place. (1) Vignette de repère jugée trop petite par rapport à l'espace disponible désormais dégagé par le portrait — sa taille fixe (LOCATOR_WIDTH_MM, 93mm) laissait du blanc inutilisé sous la carte principale. Remplacée par une mise en page dynamique (layoutAndDrawPage1Maps, remplace le calcul dupliqué dans exportAsPdf et appendGroupPagesToDoc) : la carte principale prend toute la largeur disponible (hauteur selon son propre ratio), puis la vignette grandit pour combler tout ce qu'il reste en dessous (largeur pleine par défaut, plafonnée par la hauteur vraiment restante) — si vraiment plus de place (cas extrême), elle est omise plutôt qu'écrasée à une taille illisible. locatorFootprintHeight et la position fixe bas-droite de drawLocatorPanel (devenue une fonction de dessin pure, à un emplacement et une taille fournis par l'appelant) sont supprimées, remplacées par ce calcul dynamique. (2) Nouveau bug de capture repéré par Valentin, plus grave que le précédent : avec certains fonds de carte, la GRANDE carte ressortait entièrement gris foncé, sans aucune tuile visible (la petite vignette, elle, restait correcte). Cause : en retirant le cran de zoom de l'entrée précédente, l'attente du chargement des tuiles avait été retirée EN MÊME TEMPS que le changement de vue qui la justifiait à l'origine — la grande carte ne l'a donc plus jamais eue, alors que la vignette (qui change toujours de vue, vers le bassin) l'a conservée. Si le fond de carte vient d'être changé juste avant l'export, ses tuiles n'ont pas eu le temps de charger et rien n'attend qu'elles le fassent. Corrigé avec captureMainMap() : attend la fin du chargement des tuiles (waitForTilesToLoad, sans changer la vue, donc sans réintroduire le problème de précision de l'entrée précédente) avant de capturer. (3) Sur Sombre/Satellite, la vignette de repère (qui recadre TOUJOURS vers une vue neuve du bassin, donc dépend toujours d'un vrai chargement réseau, contrairement à la grande carte qui reprend souvent une vue déjà affichée) montre encore par endroits des traces grises \"comme si la photo venait d'être prise\" : le budget d'attente pour les tuiles en échec était sans doute trop juste pour ces fonds à tuiles photo plus lourdes, sous charge réseau. waitForTilesToLoad passe de 5 à 7 secondes d'attente initiale, et jusqu'à 2 relances des tuiles en échec (au lieu d'une seule) avec un budget un peu plus généreux chacune. Validé par des tests isolés sur la nouvelle mise en page (vignette nettement agrandie par rapport à l'ancienne taille fixe, sans chevauchement ni débordement de page, cas serré géré sans planter) et par les 38/38 tests existants de tests_covoiturage.html. Les trois points restent non vérifiés à l'oeil (pas d'accès navigateur dans cette session) — en particulier le correctif (3) est un ajustement de budget de temps, pas une garantie absolue si le réseau est vraiment très lent au moment de l'export." },
   { theme: "Export PDF / PNG", text: "Demande de Valentin : quand une destination temporaire est active (panneau \"Destination temporaire\", pour un groupe ou tout un bassin), la vignette de repère doit se recentrer sur cette nouvelle adresse plutôt que rester centrée sur la faculté habituelle (Nancy ou Épinal) — avec le même niveau de zoom, donc la même précision de cadrage — et revenir automatiquement sur la faculté dès que la destination temporaire est retirée. Corrigé : captureLocatorMap centre désormais la vignette sur destinationForGroup(group) au lieu des constantes DESTINATION_NANCY/DESTINATION_EPINAL codées en dur (BASIN_LOCATOR_VIEW, qui mélangeait centre et zoom, est remplacé par BASIN_LOCATOR_ZOOM, qui ne fixe plus que le niveau de zoom par bassin). destinationForGroup() existait déjà (utilisée pour le calcul d'itinéraire) et résout déjà elle-même la priorité destination de groupe > destination de bassin > faculté habituelle (activeOverrideForGroup) — la réutiliser ici évite de dupliquer cette logique et fait que le retour automatique à la faculté après retrait d'une destination temporaire n'a nécessité AUCUN code spécifique (dès que l'override est retiré, destinationForGroup() retombe elle-même sur la constante normale). Validé par un scénario isolé couvrant les quatre cas : aucune destination temporaire (centré sur la faculté), destination temporaire de groupe (centré dessus, même zoom), retrait de cette destination (retour automatique sur la faculté), et destination temporaire de BASSIN plutôt que de groupe (recentre aussi). Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
+  { theme: "Algorithme de covoiturage", text: "Nouvelle étape de l'algorithme demandée par Valentin : \"rendez-vous chez le/la conducteur·rice\". Constat de départ : le conducteur va systématiquement chercher chaque passager·ère à son domicile, même quand plusieurs personnes cochées habitent à quelques minutes les unes des autres — un détour évitable si ces personnes peuvent se retrouver elles-mêmes. Précision demandée par Valentin sur la portée : UNIQUEMENT les personnes concernées par le trajet déjà généré (pas tout le groupe avant calcul) — implémenté comme une 4e étape (applyMeetupRendezvous, section 12), appliquée UNE FOIS sur le meilleur résultat retenu après les essais randomisés existants (RESTARTS), jamais à l'intérieur de bestInsertion/runSavingsConsolidation/insertPickupCandidates/localSearchImprove qui restent inchangées. Pour chaque passager·ère déjà assigné·e à un trajet, si elle/il peut rejoindre le domicile de son conducteur·rice en 10 minutes maximum (MEETUP_MAX_SECONDS) — à pied (une matrice piétonne dédiée, calculée une seule fois pour les seules personnes concernées par CE trajet) ou avec son propre véhicule si elle/il en a un (hasCarCapability, en réutilisant directement la grande matrice routière déjà calculée pour tout le monde — aucun appel réseau supplémentaire pour cette option) — elle/il est retiré·e du trajet comme point de passage : son conducteur·rice n'a alors plus aucun détour à faire pour cette personne. Le mode le plus rapide des deux est retenu et affiché (\"Rendez-vous chez X, Y min à pied/en voiture\" remplace \"Absorbé dans le trajet de X\"), en gardant le même rôle \"Passager·ère (avec X)\" pour rester dans le même équipage (couleur sur la carte, regroupement dans le tableau PDF — aucun changement nécessaire de ce côté). Une personne trop loin (>10 min dans les deux modes) reste ramassée normalement, sans changement. Un rendez-vous fait en voiture ajoute son vrai petit trajet (km/temps/CO2/coût) aux totaux covoiturés du bilan ; un rendez-vous à pied n'y ajoute rien (ces totaux sont pensés comme des totaux de kilométrage VÉHICULE — vérifié que cela ne casse pas l'invariant selon lequel CO2/coût/distance évités affichent le même pourcentage, entrée du 9 sept : un rendez-vous à pied ne touche à aucun des trois, un rendez-vous en voiture les affecte tous les trois de façon proportionnelle comme n'importe quel autre trajet en voiture). Le compteur de places par conducteur·rice (affiché à l'écran) inclut désormais aussi les personnes en rendez-vous, pour ne pas sous-compter qui est réellement transporté ; le message de statut précise combien de personnes sont concernées par un rendez-vous quand c'est le cas. Validé par 4 tests isolés ajoutés à tests_covoiturage.html (deux personnes motorisées à moins de 10 min rejoignent en voiture, une personne sans voiture ne rejoint jamais qu'à pied, une personne à plus de 10 minutes dans les deux modes reste ramassée normalement, repli propre si le service de routage piéton est indisponible) — 42/42 tests passent — et par des scénarios isolés supplémentaires sur buildTraceSummary (libellés par personne, totaux covoiturés qui n'ajoutent rien pour un rendez-vous à pied) avant intégration. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
 ];
 
 // ------------------------------------------------------------------
