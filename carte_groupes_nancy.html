@@ -1599,16 +1599,19 @@ const MEETUP_MAX_SECONDS = 10 * 60;
 // piétonne dédiée aux seules personnes concernées par CE trajet), ou avec son propre véhicule
 // si elle/il en a un (hasCarCapability), en réutilisant directement le temps en voiture déjà
 // connu (T/D, la grande matrice routière déjà calculée pour tout le monde — aucun appel
-// réseau supplémentaire pour cette option). Le mode le plus rapide des deux est retenu.
-// Mute `routes` en place (retire l'indice concerné : son conducteur·rice n'a alors plus AUCUN
-// détour à faire pour cette personne) et renvoie une Map personne -> détail du rendez-vous
-// (chez qui, par quel mode, en combien de temps/km), utilisée par buildTraceSummary pour
-// l'affichage et pour compter la contribution réelle d'un trajet fait en voiture.
-// footT/footD/footIndexOf peuvent être null (service de routage piéton indisponible) : dans
-// ce cas seule l'option voiture reste évaluée, jamais de plantage. allowWalking à false (mode
-// mauvais temps, demandé par Valentin) désactive complètement l'option à pied — seules les
-// personnes motorisées peuvent alors se rendre chez leur conducteur·rice, les autres
-// retrouvent le ramassage à domicile habituel.
+// réseau supplémentaire pour cette option). PRIORITÉ demandée par Valentin : la marche est
+// toujours préférée dès qu'elle reste sous MEETUP_MAX_SECONDS, MÊME pour une personne motorisée
+// pour qui la voiture serait plus rapide — la voiture n'est utilisée que si la marche dépasse
+// ce seuil (ou est indisponible : mode mauvais temps, service de routage piéton en panne,
+// personne sans marge piétonne connue). Mute `routes` en place (retire l'indice concerné : son
+// conducteur·rice n'a alors plus AUCUN détour à faire pour cette personne) et renvoie une Map
+// personne -> détail du rendez-vous (chez qui, par quel mode, en combien de temps/km), utilisée
+// par buildTraceSummary pour l'affichage et pour compter la contribution réelle d'un trajet
+// fait en voiture. footT/footD/footIndexOf peuvent être null (service de routage piéton
+// indisponible) : dans ce cas seule l'option voiture reste évaluée, jamais de plantage.
+// allowWalking à false (mode mauvais temps, demandé par Valentin) désactive complètement
+// l'option à pied — seules les personnes motorisées peuvent alors se rendre chez leur
+// conducteur·rice, les autres retrouvent le ramassage à domicile habituel.
 function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT, footD, footIndexOf, allowWalking) {
   const meetupInfo = new Map();
   for (let di = 0; di < routes.length; di++) {
@@ -1631,8 +1634,11 @@ function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT
         driveKm = D[passengerRoadIdx][driverRoadIdx] / 1000;
       }
 
-      if (Math.min(walkSeconds, driveSeconds) <= MEETUP_MAX_SECONDS) {
-        const mode = driveSeconds <= walkSeconds ? 'voiture' : 'à pied';
+      let mode = null;
+      if (walkSeconds <= MEETUP_MAX_SECONDS) mode = 'à pied';
+      else if (driveSeconds <= MEETUP_MAX_SECONDS) mode = 'voiture';
+
+      if (mode) {
         routes[di].splice(pi, 1);
         meetupInfo.set(passenger, {
           driver, mode,
@@ -1710,15 +1716,22 @@ function buildTraceSummary({ drivers, survivingDrivers, pickupCandidates, indepe
     // routes[di] par applyMeetupRendezvous) : listées juste après les passager·ères
     // ramassé·es normalement, avec le même rôle "Passager·ère (avec X)" pour rester dans le
     // même équipage (couleur, regroupement PDF...) bien qu'elles ne soient plus un point de
-    // passage du trajet.
+    // passage du trajet. Un rendez-vous fait EN VOITURE affiche son coût/CO2 propre dans la
+    // colonne "Covoiturage" du tableau PDF (demandé par Valentin) — même calcul que pour les
+    // totaux resserrés ci-dessus (EMISSION_G_PER_KM/COST_PER_KM appliqués au km réel de CE
+    // petit trajet, pas au trajet complet du groupe). Un rendez-vous à pied n'a pas de
+    // dépense véhicule à afficher, seul le temps de marche est indiqué.
     meetupInfo.forEach((info, person) => {
       if (info.driver !== d) return;
       const sc = computeSoloMetrics(person, metricsCtx);
+      const meetupLabel = info.mode === 'voiture'
+        ? `Rendez-vous chez ${d.nom} : ${fmtKm(info.km)}, ${fmtMin(info.seconds)}, ${fmtKg(info.km * EMISSION_G_PER_KM / 1000)}, ${fmtEuro(info.km * COST_PER_KM)} (en voiture)`
+        : `Rendez-vous chez ${d.nom} (${fmtMin(info.seconds)} à pied)`;
       perPerson.push({
         nom: person.nom, mode: activeTransportMode(person) || '—',
         role: `Passager·ère (avec ${d.nom})`,
         seulKm: sc.km, seulSeconds: sc.seconds, seulCO2: sc.co2, seulCost: sc.cost,
-        covoitLabel: `Rendez-vous chez ${d.nom} (${fmtMin(info.seconds)} ${info.mode === 'voiture' ? 'en voiture' : 'à pied'})`
+        covoitLabel: meetupLabel
       });
     });
   });
@@ -4105,6 +4118,7 @@ const PROJECT_HISTORY = [
   { theme: "Données, import et géocodage", text: "Nouveau bouton demandé par Valentin, dans l'encadré \"Pour l'année prochaine\" à côté de \"Recréer les groupes par proximité\" : \"Télécharger la liste (Excel)\", qui exporte les personnes actuellement chargées (data) triées par groupe puis par nom, via SheetJS (déjà chargé pour l'import, XLSX.utils.json_to_sheet + XLSX.writeFile — aucune nouvelle bibliothèque). Pensé explicitement pour le cas d'usage décrit : après une recréation des groupes par proximité (qui réattribue déjà le numéro de groupe de chacun·e dans data), télécharger la base à jour dans le nouvel ordre plutôt que de la reconstituer à la main. Aucun recalcul ici : la fonction relit data telle quelle (déjà réattribuée par regroupByGeography au moment du clic) et se contente de trier (compareByGroupThenName : numérique si les deux groupes le sont, alphabétique sinon, comme le tri déjà utilisé pour les groupes ailleurs dans le fichier). Colonnes exportées : Groupe, Nom, Adresse, Ville, Mode de déplacement, Plan B, Stabilité/abonnement, Places proposées — pas les colonnes internes au calcul (coordonnées, score de géocodage) ; le code postal n'y figure pas non plus, mais parce qu'il n'est déjà plus conservé dans data après géocodage (buildFinalRows, section 23), pas une omission propre à cet export. Le bouton fonctionne à tout moment dès que des données sont chargées (pas seulement juste après un regroupement), ce qui n'exclut rien de ce qui était demandé et couvre aussi le cas où on veut juste exporter la répartition actuelle. Validé par 5 tests isolés (tri numérique avec plus de 9 groupes — 10 ne doit pas passer avant 2 comme le ferait un tri alphabétique naïf —, repli alphabétique propre sur un numéro de groupe non purement numérique, colonnes et tri corrects sur l'export réel, alerte sans plantage si aucune donnée n'est chargée), dont un ajouté en dur à tests_covoiturage.html (compareByGroupThenName) — 44/44 tests passent. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
   { theme: "Données, import et géocodage", text: "Vérification demandée par Valentin : lors d'une réinitialisation des groupes (\"Recréer les groupes par proximité\", regroupByGeography, section 22), l'adresse prise en compte pour le clustering géographique est-elle bien l'adresse actuellement active selon le bouton \"utiliser l'adresse la plus proche\" ? Audit du code : le clustering (clusterWithRestarts/runBalancedKMeans/kmeansPlusPlusInit/balancedAssign) lit directement les champs data[].lat/.lon, or applyClosestAddressPreference() (section 18) écrit déjà dans ces mêmes champs l'adresse correspondant à l'état du bouton (au dernier import, retry de géocodage, ou changement du bouton) — confirmé par un scénario isolé (deux personnes avec adresse la plus proche déjà appliquée avant le regroup, correctement regroupées selon cette adresse). Conclusion sur la question posée : pas de bug, le regroup utilise bien l'adresse active. En creusant plus loin (question adjacente, pas posée mais liée), un bug distinct a été trouvé et corrigé : regroupByGeography() ne vidait jamais groupDestinationOverrides (les destinations temporaires réglées PAR GROUPE, section identifiée aux lignes ~450/2108). Or les numéros de groupe sont réattribués à de nouvelles personnes par le regroup : une destination temporaire posée avant pour, par exemple, le groupe \"3\" restait donc active après pour les NOUVELLES personnes héritant de ce numéro, ce qui aurait faussé leur choix d'adresse la plus proche (destinationForGroup) au prochain déclenchement d'applyClosestAddressPreference (nouveau clic sur le bouton, ré-import, retry). Corrigé en vidant groupDestinationOverrides dans regroupByGeography, juste après la réattribution des groupes, avec mention ajoutée au message de confirmation (\"destinations temporaires par groupe\" listée parmi ce qui sera perdu). basinDestinationOverrides (indexé par bassin nancy/épinal, qui ne change pas avec le regroup) n'est volontairement pas touché : il reste valide. Validé par un scénario isolé simulant un regroup complet avec un override de groupe et un override de bassin actifs : le premier est bien vidé après coup, le second reste inchangé — plus les 44/44 tests existants de tests_covoiturage.html, non affectés (regroupByGeography n'est pas dupliqué dans ce fichier de tests, comme les autres fonctions fortement couplées au DOM : orchestration/confirm/alert vérifiées isolément via script Node dédié, comme pour exportRosterAsExcel/exportAllGroups). Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
   { theme: "Algorithme de covoiturage", text: "Signalé par Valentin après la vérification précédente sur regroupByGeography : lors d'une recréation des groupes par proximité, certaines personnes se retrouvaient dans un groupe géographiquement éloigné (exemple donné : une personne au nord de Nancy isolée dans un groupe sinon entièrement au sud). Cause identifiée dans balancedAssign (section 11, utilisée par runBalancedKMeans/clusterWithRestarts) : cette fonction assigne les personnes aux groupes en triant TOUTES les paires personne/centroïde par distance dans un ordre global, et s'arrête d'assigner à un groupe dès qu'il atteint sa taille cible — un groupe proche déjà complet au moment où l'on traite une personne la force donc vers le groupe le moins loin encore disponible, même très éloigné, sans jamais revenir en arrière pour comparer avec ce que ce groupe éloigné contient réellement. Corrigé par une nouvelle étape de recherche locale par échanges (swapImproveAssignments, section 11, même principe 2-opt que localSearchImprove pour les trajets) : tant qu'échanger le groupe de deux personnes de groupes différents réduit la somme de leurs distances à leur centroïde respectif, l'échange est appliqué — répété jusqu'à stabilité (ou 25 passes maximum). Un échange ne change jamais l'effectif des groupes (contrainte de tailles cibles intacte) et est refusé s'il ferait descendre le nombre de conducteur·rices d'un groupe en dessous de son niveau actuel ou du minimum requis (MIN_CAR_PER_GROUP, contrainte intacte elle aussi) — seules les contraintes 1 à 4 documentées pour Valentin restent inchangées, seul le critère géographique (5) est amélioré. Intégré dans runBalancedKMeans juste avant son retour, donc bénéficie aussi des 5 essais aléatoires (RESTARTS) déjà en place. Validé par 3 scénarios isolés : deux personnes clairement échangées entre deux pôles nord/sud sont bien remises dans leur groupe géographique réel sans changer les tailles (coût total vérifié en baisse) ; un échange géographiquement favorable mais qui ferait tomber un groupe sous son minimum de conducteur·rices est bien refusé ; sur un cas à 40 personnes réparties en 2 pôles nets avec bruit aléatoire, plus aucune personne ne finit isolée dans le pôle géographique opposé au sien après affinage — plus 2 tests dupliqués dans tests_covoiturage.html (cas d'échange correctif, cas de refus par contrainte conducteur·rices) : 46/46 tests passent. Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier l'effet réel sur un vrai jeu de données de promotion, à recontrôler sur un export/regroupement en conditions réelles." },
+  { theme: "Algorithme de covoiturage", text: "Deux demandes de Valentin sur le rendez-vous chez le/la conducteur·rice (applyMeetupRendezvous, section 12). (1) Priorité de mode inversée : jusqu'ici, entre marche et voiture, le mode le PLUS RAPIDE des deux était retenu (\"driveSeconds <= walkSeconds ? 'voiture' : 'à pied'\") — une personne motorisée dont la voiture était plus rapide que la marche prenait donc systématiquement sa voiture, même pour un trajet à pied de 8-9 minutes. Valentin veut désormais que la marche soit TOUJOURS privilégiée dès qu'elle reste sous les 10 minutes (MEETUP_MAX_SECONDS), même si la voiture serait plus rapide pour cette personne : la voiture n'est utilisée qu'en dernier recours, quand la marche dépasse ce seuil (ou est indisponible : mode mauvais temps déjà existant, service de routage piéton en panne, ou la personne n'a pas de véhicule propre). Logique remplacée par une priorité explicite (marche d'abord, voiture en repli) plutôt qu'une comparaison des deux durées. (2) Le coût/CO2 d'un rendez-vous fait EN VOITURE était déjà intégré aux totaux resserrés du bilan (concernedCovoitKm/Seconds/CO2/Cost dans buildTraceSummary, entrée du 9 sept) mais restait invisible dans le détail par personne : la colonne \"Covoiturage\" du tableau page 2 de l'export PDF n'affichait que le temps (\"Rendez-vous chez X (Y min en voiture)\"), sans le coût ni le CO2 de CE trajet spécifique. Le libellé d'un rendez-vous en voiture affiche maintenant distance/temps/CO2/coût réels de ce petit trajet (même format que la ligne \"Conduit : ...\" du/de la conducteur·rice, mêmes formules EMISSION_G_PER_KM/COST_PER_KM que pour les totaux) — un rendez-vous à pied n'affiche toujours que le temps, n'ayant aucune dépense véhicule à afficher. Validé par des scénarios isolés (marche préférée alors que la voiture serait 2x plus rapide, tant qu'elle reste sous 10 minutes ; bascule effective sur la voiture seulement quand la marche dépasse 10 minutes ; libellé de la colonne \"Covoiturage\" contenant le bon coût/CO2, vérifié via un appel réel à buildTraceSummary et non une reconstruction manuelle du texte) et par les tests existants adaptés dans tests_covoiturage.html (l'ancien test qui attendait la voiture comme mode \"le plus rapide\" a été réécrit pour la nouvelle priorité, un nouveau test couvre le repli sur la voiture au-delà de 10 minutes de marche) — 47/47 tests passent. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
 ];
 
 // ------------------------------------------------------------------

@@ -406,6 +406,9 @@ function hasCarCapability(m) {
   return isCarDriverMode(m.deplacement) || isCarDriverMode(m.deplacementSecours);
 }
 const MEETUP_MAX_SECONDS = 10 * 60;
+// PRIORITÉ demandée par Valentin : la marche est toujours préférée dès qu'elle reste sous
+// MEETUP_MAX_SECONDS, même pour une personne motorisée pour qui la voiture serait plus
+// rapide — la voiture n'est utilisée que si la marche dépasse ce seuil (ou est indisponible).
 function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT, footD, footIndexOf, allowWalking) {
   const meetupInfo = new Map();
   for (let di = 0; di < routes.length; di++) {
@@ -428,8 +431,11 @@ function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT
         driveKm = D[passengerRoadIdx][driverRoadIdx] / 1000;
       }
 
-      if (Math.min(walkSeconds, driveSeconds) <= MEETUP_MAX_SECONDS) {
-        const mode = driveSeconds <= walkSeconds ? 'voiture' : 'à pied';
+      let mode = null;
+      if (walkSeconds <= MEETUP_MAX_SECONDS) mode = 'à pied';
+      else if (driveSeconds <= MEETUP_MAX_SECONDS) mode = 'voiture';
+
+      if (mode) {
         routes[di].splice(pi, 1);
         meetupInfo.set(passenger, {
           driver, mode,
@@ -647,24 +653,39 @@ test('consolidation : personne n\'est perdu ni dupliqué', () => {
   assert(seen.size === 7, `attendu 7 personnes présentes exactement une fois, obtenu ${seen.size}`);
 });
 
-test('rendez-vous : deux personnes motorisées à moins de 10 min rejoignent la conductrice en voiture', () => {
+test('rendez-vous : la marche est privilégiée même si la voiture serait plus rapide, tant qu\'elle reste sous 10 min', () => {
   const lea = { id: 1, nom: 'Léa', deplacement: 'Voiture individuelle (seul(e))' };
   const hugo = { id: 2, nom: 'Hugo', deplacement: 'Voiture individuelle (seul(e))' };
   const emma = { id: 3, nom: 'Emma', deplacement: 'Covoiturage en tant que Conducteur / Conductrice' };
   const dest = { id: 'dest' };
   const roadPoints = [lea, hugo, emma, dest];
   const LEA = 0, HUGO = 1, EMMA = 2, DEST = 3;
-  const T = [[0, 240, 180, 1200], [240, 0, 200, 1300], [180, 200, 0, 1100], [1200, 1300, 1100, 0]];
+  const T = [[0, 240, 180, 1200], [240, 0, 200, 1300], [180, 200, 0, 1100], [1200, 1300, 1100, 0]]; // 4min/3min en voiture
   const D = T.map(row => row.map(s => s * 10));
   const footIndexOf = new Map([[lea, 0], [hugo, 1], [emma, 2]]);
-  const footT = [[0, 480, 420], [480, 0, 500], [420, 500, 0]];
+  const footT = [[0, 480, 420], [480, 0, 500], [420, 500, 0]]; // 8min/7min à pied — plus lent que la voiture mais sous 10 min
   const footD = footT.map(row => row.map(s => s * 2));
   const routes = [[LEA, HUGO, EMMA, DEST]];
   const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf, true);
   assert(routes[0].length === 2, `le trajet de Léa devrait être réduit à [Léa, dest], obtenu ${JSON.stringify(routes[0])}`);
   assert(meetupInfo.size === 2, `attendu 2 rendez-vous (Hugo, Emma), obtenu ${meetupInfo.size}`);
-  assert(meetupInfo.get(hugo).mode === 'voiture', 'Hugo devrait rejoindre en voiture (plus rapide pour lui)');
-  assert(meetupInfo.get(emma).mode === 'voiture', 'Emma devrait rejoindre en voiture (plus rapide pour elle)');
+  assert(meetupInfo.get(hugo).mode === 'à pied', 'Hugo est motorisé mais sa marche (8 min) reste sous 10 min : la marche doit être privilégiée');
+  assert(meetupInfo.get(emma).mode === 'à pied', 'Emma est motorisée mais sa marche (7 min) reste sous 10 min : la marche doit être privilégiée');
+});
+
+test('rendez-vous : la voiture prend le relais seulement si la marche dépasse 10 minutes', () => {
+  const lea = { id: 1, nom: 'Léa', deplacement: 'Voiture individuelle (seul(e))' };
+  const hugo = { id: 2, nom: 'Hugo', deplacement: 'Voiture individuelle (seul(e))' };
+  const dest = { id: 'dest' };
+  const roadPoints = [lea, hugo, dest];
+  const T = [[0, 300, 1200], [300, 0, 1300], [1200, 1300, 0]]; // 5 min en voiture
+  const D = T.map(row => row.map(s => s * 10));
+  const footIndexOf = new Map([[lea, 0], [hugo, 1]]);
+  const footT = [[0, 720], [720, 0]]; // 12 min à pied, au-delà du seuil
+  const footD = footT.map(row => row.map(s => s * 2));
+  const routes = [[0, 1, 2]];
+  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf, true);
+  assert(meetupInfo.get(hugo).mode === 'voiture', `la marche de Hugo (12 min) dépasse 10 min : la voiture doit être utilisée, obtenu ${meetupInfo.get(hugo).mode}`);
 });
 
 test('rendez-vous : une personne sans voiture ne rejoint jamais qu\'à pied', () => {
