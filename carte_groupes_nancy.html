@@ -1294,8 +1294,60 @@ function totalWithinClusterDistance(points, assignments, centroids) {
   return total;
 }
 
+// Corrige un défaut connu de balancedAssign ci-dessus, repéré par Valentin (une personne au
+// nord de Nancy isolée dans un groupe sinon entièrement au sud) : parce que cette fonction
+// traite les paires personne/centroïde dans un ORDRE GLOBAL trié par distance et s'arrête
+// dès qu'un groupe atteint sa taille cible, une personne peut se retrouver "coincée" dans un
+// groupe géographiquement éloigné simplement parce que son groupe le plus proche était déjà
+// complet au moment où on l'a traitée — même s'il existe, dans ce groupe éloigné, quelqu'un
+// qui serait au contraire mieux placé dans SON groupe à elle/lui. Recherche locale par
+// échanges (façon 2-opt, même principe que localSearchImprove pour les trajets, section 12) :
+// tant qu'échanger le groupe de deux personnes de groupes différents réduit la somme de
+// leurs distances à leur centroïde respectif, on l'applique. Un échange ne change JAMAIS
+// l'effectif des groupes (contrainte de tailles cibles préservée) ; il est en revanche
+// refusé s'il ferait descendre le nombre de conducteur·rices d'un groupe en dessous de son
+// niveau actuel (s'il était déjà sous le minimum) ou en dessous du minimum (s'il l'atteignait
+// tout juste) — la contrainte de conducteur·rices minimum reste donc elle aussi respectée.
+function swapImproveAssignments(points, assignments, centroids, minCarPerGroup) {
+  minCarPerGroup = minCarPerGroup || 0;
+  const k = centroids.length;
+  const result = assignments.slice();
+  const carCounts = new Array(k).fill(0);
+  result.forEach((g, i) => { if (hasCarCapability(points[i])) carCounts[g]++; });
+
+  const MAX_PASSES = 25;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    let improved = false;
+    for (let i = 0; i < points.length; i++) {
+      for (let j = i + 1; j < points.length; j++) {
+        const a = result[i], b = result[j];
+        if (a === b) continue;
+        const currentCost = haversine(points[i], centroids[a]) + haversine(points[j], centroids[b]);
+        const swappedCost = haversine(points[i], centroids[b]) + haversine(points[j], centroids[a]);
+        if (swappedCost >= currentCost - 1e-9) continue;
+
+        const iCar = hasCarCapability(points[i]), jCar = hasCarCapability(points[j]);
+        if (iCar !== jCar) {
+          const newCarA = carCounts[a] - (iCar ? 1 : 0) + (jCar ? 1 : 0);
+          const newCarB = carCounts[b] - (jCar ? 1 : 0) + (iCar ? 1 : 0);
+          if (newCarA < Math.min(carCounts[a], minCarPerGroup)) continue;
+          if (newCarB < Math.min(carCounts[b], minCarPerGroup)) continue;
+          carCounts[a] = newCarA; carCounts[b] = newCarB;
+        }
+
+        result[i] = b; result[j] = a;
+        improved = true;
+      }
+    }
+    if (!improved) break;
+  }
+  return result;
+}
+
 // k-means avec assignation à taille contrainte : alterne "assigner en respectant les
-// tailles cibles" et "recalculer les centroïdes", jusqu'à stabilité.
+// tailles cibles" et "recalculer les centroïdes", jusqu'à stabilité, puis affine le résultat
+// par échanges locaux (swapImproveAssignments ci-dessus) pour éliminer les cas où une
+// personne reste isolée loin du reste de son groupe.
 function runBalancedKMeans(points, k, targetSizes, maxIter, minCarPerGroup) {
   let centroids = kmeansPlusPlusInit(points, k);
   let assignments = null;
@@ -1306,6 +1358,8 @@ function runBalancedKMeans(points, k, targetSizes, maxIter, minCarPerGroup) {
     centroids = recomputeCentroids(points, assignments, k, centroids);
     if (!changed) break;
   }
+  assignments = swapImproveAssignments(points, assignments, centroids, minCarPerGroup);
+  centroids = recomputeCentroids(points, assignments, k, centroids);
   return { assignments, centroids, cost: totalWithinClusterDistance(points, assignments, centroids) };
 }
 
@@ -4050,6 +4104,7 @@ const PROJECT_HISTORY = [
   { theme: "Export PDF / PNG", text: "Deux demandes de Valentin sur l'export groupé (\"Exporter tous les groupes tracés\"). (1) Il voulait retrouver, pour chaque groupe du document groupé, exactement le même design que l'export individuel (\"Exporter (PDF)\") — déjà largement le cas (appendGroupPagesToDoc appelle les mêmes fonctions que exportAsPdf), mais la toute première page du document groupé était une simple page de bilan textuel-ish (drawGlobalSummaryPage), différente du reste. Restructuré : le document commence directement par la page carte du premier groupe (le constructeur jsPDF crée sa page 1 en portrait, réutilisée telle quelle par appendGroupPagesToDoc via un nouveau paramètre isFirstPage — pas de page blanche ajoutée), suivi des 2 pages de chaque groupe restant, et le bilan global (déjà existant, quasiment inchangé) est déplacé en TOUT DERNIER, comme demandé, avec en plus une carte qui lui était propre demandée par Valentin (\"pense à rajouter des totaux... avec un peu de design\") : une nouvelle page \"Vue générale\" (carte de TOUS les groupes tracés avec leurs tracés réels superposés, recadrée sur leur emprise complète — captureGlobalOverviewMap, réutilise les géométries déjà calculées dans savedTraceData, aucun nouvel appel réseau) suivie du bilan global existant (drawGlobalSummaryPage) — les deux mises en page exactement comme pour un groupe (portrait carte, puis paysage bilan, via layoutAndDrawPage1Maps et drawGlobalSummaryPage), pour que cette clôture ait le même soin visuel que le reste du document plutôt que de trancher avec lui. (2) Repéré par Valentin (déjà vécu avec l'import, entrée du 9 sept) : pendant l'export groupé, la colonne de gauche verrouillée ne peut plus défiler, et en plus son CONTENU change de taille à chaque groupe affiché (le passage d'un groupe à l'autre redessine #member-list avec un nombre de personnes différent), ce qui peut décaler le bouton \"Exporter tous les groupes tracés\" (qui porte le compteur \"Traçage X/Y\"/\"Export X/Y\") hors du champ de vision sans qu'on ait soi-même fait défiler la vue — un cran plus sournois que le cas de l'import, où seul le VERROU empêchait de défiler. Corrigé de façon plus générale cette fois : #subtitle (en haut de la colonne) passe en position:sticky (reste épinglé en haut de la zone visible quel que soit le défilement ET quel que soit ce qui se redessine en dessous), et une nouvelle fonction setSidebarStatus() y écrit le même message que le bouton à chaque étape ; setImportStatus() est réécrite pour s'appuyer dessus (elle continue en plus d'écrire dans #import-status, qui reste utile juste sous \"Parcourir\"). Validé par un test de structure isolé (séquence de pages exacte sur un cas à 3 groupes : 8 pages, orientations alternées portrait/paysage, aucune page blanche en tête) et par les 43/43 tests existants de tests_covoiturage.html, non affectés (ce chantier ne touche qu'à l'export PDF et à l'interface). Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier le rendu réel de la vue générale avec tracés superposés, et le comportement visuel du sticky pendant un export réel." },
   { theme: "Données, import et géocodage", text: "Nouveau bouton demandé par Valentin, dans l'encadré \"Pour l'année prochaine\" à côté de \"Recréer les groupes par proximité\" : \"Télécharger la liste (Excel)\", qui exporte les personnes actuellement chargées (data) triées par groupe puis par nom, via SheetJS (déjà chargé pour l'import, XLSX.utils.json_to_sheet + XLSX.writeFile — aucune nouvelle bibliothèque). Pensé explicitement pour le cas d'usage décrit : après une recréation des groupes par proximité (qui réattribue déjà le numéro de groupe de chacun·e dans data), télécharger la base à jour dans le nouvel ordre plutôt que de la reconstituer à la main. Aucun recalcul ici : la fonction relit data telle quelle (déjà réattribuée par regroupByGeography au moment du clic) et se contente de trier (compareByGroupThenName : numérique si les deux groupes le sont, alphabétique sinon, comme le tri déjà utilisé pour les groupes ailleurs dans le fichier). Colonnes exportées : Groupe, Nom, Adresse, Ville, Mode de déplacement, Plan B, Stabilité/abonnement, Places proposées — pas les colonnes internes au calcul (coordonnées, score de géocodage) ; le code postal n'y figure pas non plus, mais parce qu'il n'est déjà plus conservé dans data après géocodage (buildFinalRows, section 23), pas une omission propre à cet export. Le bouton fonctionne à tout moment dès que des données sont chargées (pas seulement juste après un regroupement), ce qui n'exclut rien de ce qui était demandé et couvre aussi le cas où on veut juste exporter la répartition actuelle. Validé par 5 tests isolés (tri numérique avec plus de 9 groupes — 10 ne doit pas passer avant 2 comme le ferait un tri alphabétique naïf —, repli alphabétique propre sur un numéro de groupe non purement numérique, colonnes et tri corrects sur l'export réel, alerte sans plantage si aucune donnée n'est chargée), dont un ajouté en dur à tests_covoiturage.html (compareByGroupThenName) — 44/44 tests passent. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
   { theme: "Données, import et géocodage", text: "Vérification demandée par Valentin : lors d'une réinitialisation des groupes (\"Recréer les groupes par proximité\", regroupByGeography, section 22), l'adresse prise en compte pour le clustering géographique est-elle bien l'adresse actuellement active selon le bouton \"utiliser l'adresse la plus proche\" ? Audit du code : le clustering (clusterWithRestarts/runBalancedKMeans/kmeansPlusPlusInit/balancedAssign) lit directement les champs data[].lat/.lon, or applyClosestAddressPreference() (section 18) écrit déjà dans ces mêmes champs l'adresse correspondant à l'état du bouton (au dernier import, retry de géocodage, ou changement du bouton) — confirmé par un scénario isolé (deux personnes avec adresse la plus proche déjà appliquée avant le regroup, correctement regroupées selon cette adresse). Conclusion sur la question posée : pas de bug, le regroup utilise bien l'adresse active. En creusant plus loin (question adjacente, pas posée mais liée), un bug distinct a été trouvé et corrigé : regroupByGeography() ne vidait jamais groupDestinationOverrides (les destinations temporaires réglées PAR GROUPE, section identifiée aux lignes ~450/2108). Or les numéros de groupe sont réattribués à de nouvelles personnes par le regroup : une destination temporaire posée avant pour, par exemple, le groupe \"3\" restait donc active après pour les NOUVELLES personnes héritant de ce numéro, ce qui aurait faussé leur choix d'adresse la plus proche (destinationForGroup) au prochain déclenchement d'applyClosestAddressPreference (nouveau clic sur le bouton, ré-import, retry). Corrigé en vidant groupDestinationOverrides dans regroupByGeography, juste après la réattribution des groupes, avec mention ajoutée au message de confirmation (\"destinations temporaires par groupe\" listée parmi ce qui sera perdu). basinDestinationOverrides (indexé par bassin nancy/épinal, qui ne change pas avec le regroup) n'est volontairement pas touché : il reste valide. Validé par un scénario isolé simulant un regroup complet avec un override de groupe et un override de bassin actifs : le premier est bien vidé après coup, le second reste inchangé — plus les 44/44 tests existants de tests_covoiturage.html, non affectés (regroupByGeography n'est pas dupliqué dans ce fichier de tests, comme les autres fonctions fortement couplées au DOM : orchestration/confirm/alert vérifiées isolément via script Node dédié, comme pour exportRosterAsExcel/exportAllGroups). Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
+  { theme: "Algorithme de covoiturage", text: "Signalé par Valentin après la vérification précédente sur regroupByGeography : lors d'une recréation des groupes par proximité, certaines personnes se retrouvaient dans un groupe géographiquement éloigné (exemple donné : une personne au nord de Nancy isolée dans un groupe sinon entièrement au sud). Cause identifiée dans balancedAssign (section 11, utilisée par runBalancedKMeans/clusterWithRestarts) : cette fonction assigne les personnes aux groupes en triant TOUTES les paires personne/centroïde par distance dans un ordre global, et s'arrête d'assigner à un groupe dès qu'il atteint sa taille cible — un groupe proche déjà complet au moment où l'on traite une personne la force donc vers le groupe le moins loin encore disponible, même très éloigné, sans jamais revenir en arrière pour comparer avec ce que ce groupe éloigné contient réellement. Corrigé par une nouvelle étape de recherche locale par échanges (swapImproveAssignments, section 11, même principe 2-opt que localSearchImprove pour les trajets) : tant qu'échanger le groupe de deux personnes de groupes différents réduit la somme de leurs distances à leur centroïde respectif, l'échange est appliqué — répété jusqu'à stabilité (ou 25 passes maximum). Un échange ne change jamais l'effectif des groupes (contrainte de tailles cibles intacte) et est refusé s'il ferait descendre le nombre de conducteur·rices d'un groupe en dessous de son niveau actuel ou du minimum requis (MIN_CAR_PER_GROUP, contrainte intacte elle aussi) — seules les contraintes 1 à 4 documentées pour Valentin restent inchangées, seul le critère géographique (5) est amélioré. Intégré dans runBalancedKMeans juste avant son retour, donc bénéficie aussi des 5 essais aléatoires (RESTARTS) déjà en place. Validé par 3 scénarios isolés : deux personnes clairement échangées entre deux pôles nord/sud sont bien remises dans leur groupe géographique réel sans changer les tailles (coût total vérifié en baisse) ; un échange géographiquement favorable mais qui ferait tomber un groupe sous son minimum de conducteur·rices est bien refusé ; sur un cas à 40 personnes réparties en 2 pôles nets avec bruit aléatoire, plus aucune personne ne finit isolée dans le pôle géographique opposé au sien après affinage — plus 2 tests dupliqués dans tests_covoiturage.html (cas d'échange correctif, cas de refus par contrainte conducteur·rices) : 46/46 tests passent. Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier l'effet réel sur un vrai jeu de données de promotion, à recontrôler sur un export/regroupement en conditions réelles." },
 ];
 
 // ------------------------------------------------------------------

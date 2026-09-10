@@ -873,6 +873,93 @@ test('compareByGroupThenName : trie par groupe numérique (10 après 2, pas avan
   assert(JSON.stringify(order) === JSON.stringify(expected), `attendu ${JSON.stringify(expected)}, obtenu ${JSON.stringify(order)}`);
 });
 
+// Affinage par échanges du clustering géographique (regroupByGeography, section 22) —
+// dupliqué depuis carte_groupes_nancy.html.
+function recomputeCentroids(points, assignments, k, previous) {
+  const sums = Array.from({ length: k }, () => ({ lat: 0, lon: 0, n: 0 }));
+  for (let i = 0; i < points.length; i++) {
+    const c = assignments[i];
+    sums[c].lat += points[i].lat; sums[c].lon += points[i].lon; sums[c].n++;
+  }
+  return sums.map((s, i) => s.n > 0 ? { lat: s.lat / s.n, lon: s.lon / s.n } : previous[i]);
+}
+function totalWithinClusterDistance(points, assignments, centroids) {
+  let total = 0;
+  for (let i = 0; i < points.length; i++) total += haversine(points[i], centroids[assignments[i]]);
+  return total;
+}
+function swapImproveAssignments(points, assignments, centroids, minCarPerGroup) {
+  minCarPerGroup = minCarPerGroup || 0;
+  const k = centroids.length;
+  const result = assignments.slice();
+  const carCounts = new Array(k).fill(0);
+  result.forEach((g, i) => { if (hasCarCapability(points[i])) carCounts[g]++; });
+
+  const MAX_PASSES = 25;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    let improved = false;
+    for (let i = 0; i < points.length; i++) {
+      for (let j = i + 1; j < points.length; j++) {
+        const a = result[i], b = result[j];
+        if (a === b) continue;
+        const currentCost = haversine(points[i], centroids[a]) + haversine(points[j], centroids[b]);
+        const swappedCost = haversine(points[i], centroids[b]) + haversine(points[j], centroids[a]);
+        if (swappedCost >= currentCost - 1e-9) continue;
+
+        const iCar = hasCarCapability(points[i]), jCar = hasCarCapability(points[j]);
+        if (iCar !== jCar) {
+          const newCarA = carCounts[a] - (iCar ? 1 : 0) + (jCar ? 1 : 0);
+          const newCarB = carCounts[b] - (jCar ? 1 : 0) + (iCar ? 1 : 0);
+          if (newCarA < Math.min(carCounts[a], minCarPerGroup)) continue;
+          if (newCarB < Math.min(carCounts[b], minCarPerGroup)) continue;
+          carCounts[a] = newCarA; carCounts[b] = newCarB;
+        }
+
+        result[i] = b; result[j] = a;
+        improved = true;
+      }
+    }
+    if (!improved) break;
+  }
+  return result;
+}
+test('swapImproveAssignments : corrige deux personnes échangées entre deux pôles géographiques, sans changer les tailles de groupe', () => {
+  const points = [
+    { lat: 48.60, lon: 6.15, deplacement: 'Bus/Tram' },
+    { lat: 48.61, lon: 6.16, deplacement: 'Bus/Tram' },
+    { lat: 48.62, lon: 6.17, deplacement: 'Bus/Tram' }, // mal placé : devrait être avec les 2 précédents
+    { lat: 48.75, lon: 6.15, deplacement: 'Bus/Tram' },
+    { lat: 48.76, lon: 6.16, deplacement: 'Bus/Tram' },
+    { lat: 48.77, lon: 6.17, deplacement: 'Bus/Tram' } // mal placé : devrait être avec les 2 précédents
+  ];
+  const badAssignments = [0, 0, 1, 1, 1, 0];
+  const centroids = recomputeCentroids(points, badAssignments, 2, [{ lat: 0, lon: 0 }, { lat: 0, lon: 0 }]);
+  const before = totalWithinClusterDistance(points, badAssignments, centroids);
+  const fixed = swapImproveAssignments(points, badAssignments, centroids, 0);
+  const fixedCentroids = recomputeCentroids(points, fixed, 2, centroids);
+  const after = totalWithinClusterDistance(points, fixed, fixedCentroids);
+  assert(fixed[1] === fixed[0], 'point 1 doit rester avec le point 0');
+  assert(fixed[2] === fixed[0], 'point 2 (mal placé) doit être échangé vers son vrai groupe géographique');
+  assert(fixed[4] === fixed[3], 'point 4 doit rester avec le point 3');
+  assert(fixed[5] === fixed[3], 'point 5 (mal placé) doit être échangé vers son vrai groupe géographique');
+  assert(after < before, `le coût total doit diminuer (avant ${before.toFixed(4)}, après ${after.toFixed(4)})`);
+  const sizesBefore = [0, 1].map(g => badAssignments.filter(a => a === g).length);
+  const sizesAfter = [0, 1].map(g => fixed.filter(a => a === g).length);
+  assert(JSON.stringify(sizesBefore) === JSON.stringify(sizesAfter), 'les tailles de groupe ne doivent jamais changer');
+});
+test('swapImproveAssignments : refuse un échange qui ferait tomber un groupe sous le minimum de conducteur·rices', () => {
+  const points = [
+    { lat: 48.90, lon: 6.15, deplacement: 'Voiture individuelle (seul(e))' }, // seul conducteur du groupe 0, mais géographiquement proche du groupe 1
+    { lat: 48.60, lon: 6.15, deplacement: 'Bus/Tram' },
+    { lat: 48.91, lon: 6.16, deplacement: 'Bus/Tram' },
+    { lat: 48.61, lon: 6.16, deplacement: 'Bus/Tram' }
+  ];
+  const assignments = [0, 0, 1, 1];
+  const centroids = recomputeCentroids(points, assignments, 2, [{ lat: 0, lon: 0 }, { lat: 0, lon: 0 }]);
+  const fixed = swapImproveAssignments(points, assignments, centroids, 1);
+  assert(fixed[0] === 0, 'l\'échange du seul conducteur du groupe 0 doit être refusé pour respecter le minimum de conducteur·rices, malgré le gain géographique');
+});
+
 // Verrou global entre actions longues — dupliqué depuis carte_groupes_nancy.html. Le
 // basculement réel des classes CSS (sidebar/failed-modal) n'est pas testable ici (ces
 // éléments n'existent pas sur cette page de tests) : setBusyLock() garde son `if (el)`,
