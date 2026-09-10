@@ -852,6 +852,27 @@ test('buildFinalRows : adresse principale non géolocalisée → classée en éc
   assert(finalRows.length === 0 && failed === 1 && failedRows.length === 1, 'ligne classée en échec, pas plantée');
 });
 
+// Tri utilisé par le téléchargement de la liste réorganisée par groupe (bouton "Télécharger
+// la liste (Excel)", section 22 de carte_groupes_nancy.html) — dupliqué ici.
+function compareByGroupThenName(a, b) {
+  const ga = String(a.groupe), gb = String(b.groupe);
+  if (ga !== gb) {
+    const na = Number(ga), nb = Number(gb);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return ga.localeCompare(gb);
+  }
+  return a.nom.localeCompare(b.nom);
+}
+test('compareByGroupThenName : trie par groupe numérique (10 après 2, pas avant), puis par nom', () => {
+  const people = [
+    { groupe: '3', nom: 'Zoé' }, { groupe: '1', nom: 'Bob' }, { groupe: '1', nom: 'Alice' },
+    { groupe: '10', nom: 'Chloé' }, { groupe: '2', nom: 'Marc' }
+  ];
+  const order = [...people].sort(compareByGroupThenName).map(p => `${p.groupe}:${p.nom}`);
+  const expected = ['1:Alice', '1:Bob', '2:Marc', '3:Zoé', '10:Chloé'];
+  assert(JSON.stringify(order) === JSON.stringify(expected), `attendu ${JSON.stringify(expected)}, obtenu ${JSON.stringify(order)}`);
+});
+
 // Verrou global entre actions longues — dupliqué depuis carte_groupes_nancy.html. Le
 // basculement réel des classes CSS (sidebar/failed-modal) n'est pas testable ici (ces
 // éléments n'existent pas sur cette page de tests) : setBusyLock() garde son `if (el)`,

@@ -260,6 +260,8 @@
       <p class="section-label" style="margin:0 0 6px;">Pour l'année prochaine</p>
       <p class="hint" style="margin:0 0 8px;">Recrée entièrement les groupes à partir des adresses actuellement chargées, en les répartissant par proximité géographique (Nancy et Épinal restent séparés). Remplace tous les groupes existants.</p>
       <button class="retry-btn secondary" id="regroup-btn" type="button">🗺️ Recréer les groupes par proximité</button>
+      <p class="hint" style="margin:8px 0 8px;">Télécharge la liste des personnes actuellement chargées, triée par groupe (numéro de groupe actuel — utile juste après une recréation par proximité, pour récupérer une base à jour).</p>
+      <button class="retry-btn secondary" id="export-roster-btn" type="button">📊 Télécharger la liste (Excel)</button>
     </div>
   </div>
   <div id="map"></div>
@@ -3356,6 +3358,54 @@ async function regroupByGeography() {
 }
 document.getElementById('regroup-btn').addEventListener('click', () => withBusyLock('recréation des groupes par proximité', regroupByGeography));
 
+// Trie les personnes par groupe (numéro si les deux sont numériques, alphabétique sinon),
+// puis par nom au sein d'un même groupe — pure fonction, utilisée par le tri de la liste
+// exportée ci-dessous.
+function compareByGroupThenName(a, b) {
+  const ga = String(a.groupe), gb = String(b.groupe);
+  if (ga !== gb) {
+    const na = Number(ga), nb = Number(gb);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return ga.localeCompare(gb);
+  }
+  return a.nom.localeCompare(b.nom);
+}
+
+// Télécharge la liste des personnes actuellement chargées (data), triée par groupe puis par
+// nom — demandé par Valentin pour récupérer une base à jour juste après une recréation des
+// groupes par proximité (regroupByGeography ci-dessus s'est chargée de réattribuer le numéro
+// de groupe de chacun·e ; ici on se contente de relire `data` telle quelle et de la trier,
+// aucun recalcul). N'inclut pas les colonnes internes au calcul (coordonnées, score de
+// géocodage...), seulement celles qui ont un sens pour une liste de répartition : groupe,
+// nom, adresse, mode de déplacement, plan B, stabilité, places proposées. Le code postal
+// n'est volontairement pas conservé dans `data` après géocodage (voir buildFinalRows,
+// section 23) : absent de cet export aussi, pas une omission de cette fonction.
+function exportRosterAsExcel() {
+  if (typeof XLSX === 'undefined') {
+    alert("Export Excel indisponible (bibliothèque non chargée).");
+    return;
+  }
+  if (data.length === 0) {
+    alert("Aucune donnée chargée à exporter.");
+    return;
+  }
+  const rows = [...data].sort(compareByGroupThenName).map(d => ({
+    'Groupe': d.groupe,
+    'Nom': d.nom,
+    'Adresse': d.adresse,
+    'Ville': d.ville,
+    'Mode de déplacement': d.deplacement || '',
+    'Plan B': d.deplacementSecours || '',
+    'Stabilité / abonnement': d.situation || '',
+    'Places proposées': d.places || ''
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Groupes');
+  XLSX.writeFile(wb, `covoiturage-groupes-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+document.getElementById('export-roster-btn').addEventListener('click', exportRosterAsExcel);
+
 // ------------------------------------------------------------------
 // 23. IMPORT — LECTURE DU FICHIER CHOISI PAR L'UTILISATEUR
 // Structure attendue : celle du formulaire Google Forms (export Sheets/xlsx), avec les
@@ -3992,6 +4042,7 @@ const PROJECT_HISTORY = [
   { theme: "Algorithme de covoiturage", text: "Ajustement demandé par Valentin sur le rendez-vous chez le/la conducteur·rice (entrée précédente) : en mode mauvais temps, seule l'option voiture doit rester possible — personne ne doit marcher jusqu'au domicile de son conducteur·rice sous la pluie. applyMeetupRendezvous reçoit un nouveau paramètre allowWalking (= !badWeatherMode côté traceRoutes) : à false, l'option à pied n'est même plus évaluée, restent alors ramassées normalement à leur domicile les seules personnes qui n'ont pas de véhicule propre (hasCarCapability) — celles qui en ont un continuent de rejoindre leur conducteur·rice en voiture, mode mauvais temps ou pas. Optimisation au passage : en mode mauvais temps, la matrice piétonne dédiée au rendez-vous n'est même plus demandée à OSRM (son résultat ne serait de toute façon pas utilisé), un appel réseau économisé à chaque traçage sous ce mode. Validé par un test isolé ajouté à tests_covoiturage.html (une personne motorisée rejoint toujours en voiture par mauvais temps, une personne sans véhicule reste ramassée normalement au lieu de marcher) — 43/43 tests passent — et par une vérification directe sur carte_groupes_nancy.html lui-même (pas seulement sa copie de test) avant intégration. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
   { theme: "Export PDF / PNG", text: "Demande de Valentin : dans l'encadré \"Équipages\" de la page 2 (drawCrewAndModeBox, section 14), la liste tronquait les équipages au-delà de ce qui tenait dans sa hauteur fixe (26mm), avec une note \"+ N équipage(s) — voir le tableau ci-dessous\" pour les autres — il veut voir TOUS les équipages directement dans l'encadré. La hauteur est désormais calculée à partir du nombre d'équipages (CREW_ROW_H par ligne) AVANT de dessiner le cadre, et ne descend jamais sous 26mm (la taille historique, qui reste inchangée tant que le nombre d'équipages ne l'exige pas) : drawCrewRecap n'a donc plus jamais besoin de tronquer, la note de troncature disparaît. La hauteur retournée par drawCrewAndModeBox (et donc par drawGroupBilanVisual) était déjà utilisée par buildGroupDetailPage pour savoir où commencer le tableau détaillé en dessous (tableTop) — un encadré plus grand laisse donc mécaniquement moins de place au tableau, qui compacte sa police en conséquence (chooseLayoutLevel, déjà en place, aucun changement nécessaire de ce côté). Validé par un test isolé : avec peu d'équipages la hauteur reste 26mm (comportement inchangé), avec beaucoup d'équipages elle grandit et tous sont bien dessinés (aucun Driver manquant, aucune note de troncature) — plus les 43/43 tests existants de tests_covoiturage.html, non affectés (ce chantier ne touche qu'à l'export PDF). Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier le cas extrême d'un très grand nombre d'équipages, où le tableau détaillé pourrait devoir déborder sur une page suivante (mécanisme de pagination de jspdf-autotable déjà existant, pas modifié ici)." },
   { theme: "Export PDF / PNG", text: "Deux demandes de Valentin sur l'export groupé (\"Exporter tous les groupes tracés\"). (1) Il voulait retrouver, pour chaque groupe du document groupé, exactement le même design que l'export individuel (\"Exporter (PDF)\") — déjà largement le cas (appendGroupPagesToDoc appelle les mêmes fonctions que exportAsPdf), mais la toute première page du document groupé était une simple page de bilan textuel-ish (drawGlobalSummaryPage), différente du reste. Restructuré : le document commence directement par la page carte du premier groupe (le constructeur jsPDF crée sa page 1 en portrait, réutilisée telle quelle par appendGroupPagesToDoc via un nouveau paramètre isFirstPage — pas de page blanche ajoutée), suivi des 2 pages de chaque groupe restant, et le bilan global (déjà existant, quasiment inchangé) est déplacé en TOUT DERNIER, comme demandé, avec en plus une carte qui lui était propre demandée par Valentin (\"pense à rajouter des totaux... avec un peu de design\") : une nouvelle page \"Vue générale\" (carte de TOUS les groupes tracés avec leurs tracés réels superposés, recadrée sur leur emprise complète — captureGlobalOverviewMap, réutilise les géométries déjà calculées dans savedTraceData, aucun nouvel appel réseau) suivie du bilan global existant (drawGlobalSummaryPage) — les deux mises en page exactement comme pour un groupe (portrait carte, puis paysage bilan, via layoutAndDrawPage1Maps et drawGlobalSummaryPage), pour que cette clôture ait le même soin visuel que le reste du document plutôt que de trancher avec lui. (2) Repéré par Valentin (déjà vécu avec l'import, entrée du 9 sept) : pendant l'export groupé, la colonne de gauche verrouillée ne peut plus défiler, et en plus son CONTENU change de taille à chaque groupe affiché (le passage d'un groupe à l'autre redessine #member-list avec un nombre de personnes différent), ce qui peut décaler le bouton \"Exporter tous les groupes tracés\" (qui porte le compteur \"Traçage X/Y\"/\"Export X/Y\") hors du champ de vision sans qu'on ait soi-même fait défiler la vue — un cran plus sournois que le cas de l'import, où seul le VERROU empêchait de défiler. Corrigé de façon plus générale cette fois : #subtitle (en haut de la colonne) passe en position:sticky (reste épinglé en haut de la zone visible quel que soit le défilement ET quel que soit ce qui se redessine en dessous), et une nouvelle fonction setSidebarStatus() y écrit le même message que le bouton à chaque étape ; setImportStatus() est réécrite pour s'appuyer dessus (elle continue en plus d'écrire dans #import-status, qui reste utile juste sous \"Parcourir\"). Validé par un test de structure isolé (séquence de pages exacte sur un cas à 3 groupes : 8 pages, orientations alternées portrait/paysage, aucune page blanche en tête) et par les 43/43 tests existants de tests_covoiturage.html, non affectés (ce chantier ne touche qu'à l'export PDF et à l'interface). Non vérifié à l'oeil (pas d'accès navigateur dans cette session) — en particulier le rendu réel de la vue générale avec tracés superposés, et le comportement visuel du sticky pendant un export réel." },
+  { theme: "Données, import et géocodage", text: "Nouveau bouton demandé par Valentin, dans l'encadré \"Pour l'année prochaine\" à côté de \"Recréer les groupes par proximité\" : \"Télécharger la liste (Excel)\", qui exporte les personnes actuellement chargées (data) triées par groupe puis par nom, via SheetJS (déjà chargé pour l'import, XLSX.utils.json_to_sheet + XLSX.writeFile — aucune nouvelle bibliothèque). Pensé explicitement pour le cas d'usage décrit : après une recréation des groupes par proximité (qui réattribue déjà le numéro de groupe de chacun·e dans data), télécharger la base à jour dans le nouvel ordre plutôt que de la reconstituer à la main. Aucun recalcul ici : la fonction relit data telle quelle (déjà réattribuée par regroupByGeography au moment du clic) et se contente de trier (compareByGroupThenName : numérique si les deux groupes le sont, alphabétique sinon, comme le tri déjà utilisé pour les groupes ailleurs dans le fichier). Colonnes exportées : Groupe, Nom, Adresse, Ville, Mode de déplacement, Plan B, Stabilité/abonnement, Places proposées — pas les colonnes internes au calcul (coordonnées, score de géocodage) ; le code postal n'y figure pas non plus, mais parce qu'il n'est déjà plus conservé dans data après géocodage (buildFinalRows, section 23), pas une omission propre à cet export. Le bouton fonctionne à tout moment dès que des données sont chargées (pas seulement juste après un regroupement), ce qui n'exclut rien de ce qui était demandé et couvre aussi le cas où on veut juste exporter la répartition actuelle. Validé par 5 tests isolés (tri numérique avec plus de 9 groupes — 10 ne doit pas passer avant 2 comme le ferait un tri alphabétique naïf —, repli alphabétique propre sur un numéro de groupe non purement numérique, colonnes et tri corrects sur l'export réel, alerte sans plantage si aucune donnée n'est chargée), dont un ajouté en dur à tests_covoiturage.html (compareByGroupThenName) — 44/44 tests passent. Non vérifié à l'oeil (pas d'accès navigateur dans cette session)." },
 ];
 
 // ------------------------------------------------------------------
