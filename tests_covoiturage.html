@@ -406,7 +406,7 @@ function hasCarCapability(m) {
   return isCarDriverMode(m.deplacement) || isCarDriverMode(m.deplacementSecours);
 }
 const MEETUP_MAX_SECONDS = 10 * 60;
-function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT, footD, footIndexOf) {
+function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT, footD, footIndexOf, allowWalking) {
   const meetupInfo = new Map();
   for (let di = 0; di < routes.length; di++) {
     const driver = survivingDrivers[di];
@@ -417,7 +417,7 @@ function applyMeetupRendezvous(routes, roadPoints, survivingDrivers, T, D, footT
       const passenger = roadPoints[passengerRoadIdx];
 
       let walkSeconds = Infinity, walkKm = 0;
-      if (footT && footIndexOf.has(passenger) && footIndexOf.has(driver)) {
+      if (allowWalking && footT && footIndexOf.has(passenger) && footIndexOf.has(driver)) {
         const pIdx = footIndexOf.get(passenger), dIdx = footIndexOf.get(driver);
         walkSeconds = footT[pIdx][dIdx];
         walkKm = footD[pIdx][dIdx] / 1000;
@@ -660,7 +660,7 @@ test('rendez-vous : deux personnes motorisées à moins de 10 min rejoignent la 
   const footT = [[0, 480, 420], [480, 0, 500], [420, 500, 0]];
   const footD = footT.map(row => row.map(s => s * 2));
   const routes = [[LEA, HUGO, EMMA, DEST]];
-  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf);
+  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf, true);
   assert(routes[0].length === 2, `le trajet de Léa devrait être réduit à [Léa, dest], obtenu ${JSON.stringify(routes[0])}`);
   assert(meetupInfo.size === 2, `attendu 2 rendez-vous (Hugo, Emma), obtenu ${meetupInfo.size}`);
   assert(meetupInfo.get(hugo).mode === 'voiture', 'Hugo devrait rejoindre en voiture (plus rapide pour lui)');
@@ -678,9 +678,33 @@ test('rendez-vous : une personne sans voiture ne rejoint jamais qu\'à pied', ()
   const footT = [[0, 360], [360, 0]];
   const footD = footT.map(row => row.map(s => s * 2));
   const routes = [[0, 1, 2]];
-  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf);
+  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf, true);
   assert(meetupInfo.has(noe), 'Noé (6 min à pied) devrait être en rendez-vous');
   assert(meetupInfo.get(noe).mode === 'à pied', `Noé n'a pas de voiture : rendez-vous à pied attendu, obtenu ${meetupInfo.get(noe).mode}`);
+});
+
+test('rendez-vous : mode mauvais temps (allowWalking=false) — la voiture reste possible, la marche non', () => {
+  const lea = { id: 1, nom: 'Léa', deplacement: 'Voiture individuelle (seul(e))' };
+  const hugo = { id: 2, nom: 'Hugo', deplacement: 'Voiture individuelle (seul(e))' }; // motorisé
+  const noe = { id: 3, nom: 'Noé', deplacement: 'Bus/Tram' }; // pas de voiture
+  const dest = { id: 'dest' };
+  const roadPoints = [lea, hugo, noe, dest];
+  const T = [
+    [0, 240, 700, 1200],
+    [240, 0, 300, 1300],
+    [700, 300, 0, 1250],
+    [1200, 1300, 1250, 0]
+  ];
+  const D = T.map(row => row.map(s => s * 10));
+  const footIndexOf = new Map([[lea, 0], [hugo, 1], [noe, 2]]);
+  const footT = [[0, 300, 360], [300, 0, 200], [360, 200, 0]]; // tout le monde à moins de 6 min à pied
+  const footD = footT.map(row => row.map(s => s * 2));
+  const routes = [[0, 1, 2, 3]];
+  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf, false);
+  assert(meetupInfo.has(hugo), 'Hugo (motorisé, 4 min en voiture) devrait quand même rejoindre en voiture par mauvais temps');
+  assert(meetupInfo.get(hugo).mode === 'voiture', 'le mode de Hugo devrait être voiture');
+  assert(!meetupInfo.has(noe), 'Noé (pas de voiture) ne devrait PAS rejoindre à pied par mauvais temps : ramassage normal attendu');
+  assert(routes[0].includes(2), 'Noé devrait rester un point de passage du trajet par mauvais temps');
 });
 
 test('rendez-vous : au-delà de 10 minutes (à pied ET en voiture), le ramassage normal est conservé', () => {
@@ -694,7 +718,7 @@ test('rendez-vous : au-delà de 10 minutes (à pied ET en voiture), le ramassage
   const footT = [[0, 800], [800, 0]]; // 13min20 à pied
   const footD = footT.map(row => row.map(s => s * 2));
   const routes = [[0, 1, 2]];
-  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf);
+  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, footT, footD, footIndexOf, true);
   assert(meetupInfo.size === 0, 'Paul est trop loin (>10 min dans les 2 modes) : ne devrait pas être en rendez-vous');
   assert(routes[0].length === 3, 'le trajet de Paul devrait rester inchangé (ramassage normal)');
 });
@@ -707,7 +731,7 @@ test('rendez-vous : matrice piétonne indisponible → repli propre sur la seule
   const T = [[0, 240, 1200], [240, 0, 1300], [1200, 1300, 0]];
   const D = T.map(row => row.map(s => s * 10));
   const routes = [[0, 1, 2]];
-  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, null, null, new Map());
+  const meetupInfo = applyMeetupRendezvous(routes, roadPoints, [lea], T, D, null, null, new Map(), true);
   assert(meetupInfo.size === 1, 'sans matrice piétonne, l\'option voiture devrait encore fonctionner pour Hugo');
   assert(meetupInfo.get(hugo).mode === 'voiture', 'mode incorrect');
 });
